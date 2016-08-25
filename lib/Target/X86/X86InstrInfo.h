@@ -575,7 +575,7 @@ private:
 
   //// Outliner stuff.
 public:
-  bool isLegalToOutline(const MachineInstr &I) const override;
+  bool isLegalToOutline(const MachineInstr &MI) const override;
   void insertOutlinerEpilog(MachineBasicBlock *MBB,
                             MachineFunction &MF) const override;
   MachineBasicBlock::instr_iterator

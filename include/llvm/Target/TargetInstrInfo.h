@@ -1472,8 +1472,7 @@ private:
   ///---------------------------- Outliner Stuff ----------------------------///
 public:
   /// isLegalToOutline - Return true if the instruction is legal to outline.
-  virtual bool isLegalToOutline(
-      const MachineInstr &I /*, const TargetRegisterInfo &TR*/) const {
+  virtual bool isLegalToOutline(const MachineInstr &MI) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::isLegalToOutline!");
   }

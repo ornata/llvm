@@ -8797,52 +8797,50 @@ FunctionPass *llvm::createCleanupLocalDynamicTLSPass() {
 }
 
 //// Outliner junk
-bool X86InstrInfo::isLegalToOutline(const MachineInstr &I) const {
-  bool legal = true;
-  int dummy;
+bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
+  int Dummy;
 
   // Don't outline returns or basic block terminators.
-  if (I.isReturn() || I.isTerminator())
-    legal = false;
+  if (MI.isReturn() || MI.isTerminator())
+     return false;
 
   // Don't outline anything that modifies or reads from the stack pointer.
-  else if (I.modifiesRegister(X86::RSP, &RI) || I.readsRegister(X86::RSP, &RI))
-    legal = false;
+  else if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI))
+    return false;
 
-  else if (I.modifiesRegister(X86::RIP, &RI) || I.readsRegister(X86::RIP, &RI))
-    legal = false;
+  else if (MI.modifiesRegister(X86::RIP, &RI) || MI.readsRegister(X86::RIP, &RI))
+    return false;
 
   // Don't outline the frame setup or destroy for a function
-  else if (I.getFlag(MachineInstr::MIFlag::FrameSetup) ||
-           I.getFlag(MachineInstr::MIFlag::FrameDestroy))
-    legal = false;
+  else if (MI.getFlag(MachineInstr::MIFlag::FrameSetup) ||
+           MI.getFlag(MachineInstr::MIFlag::FrameDestroy))
+    return false;
 
-  else if (I.isCFIInstruction())
-    legal = false;
+  else if (MI.isCFIInstruction())
+    return false;
 
-  else if (isLoadFromStackSlot(I, dummy) || isStoreToStackSlot(I, dummy))
-    legal = false;
+  else if (isLoadFromStackSlot(MI, dummy) || isStoreToStackSlot(MI, Dummy))
+    return false;
 
-  else if (isLoadFromStackSlotPostFE(I, dummy) ||
-           isStoreToStackSlotPostFE(I, dummy))
-    legal = false;
+  else if (isLoadFromStackSlotPostFE(MI, Dummy) ||
+           isStoreToStackSlotPostFE(MI, Dummy))
+    return false;
 
-  else if (I.isLabel())
-    legal = false;
+  else if (MI.isLabel())
+    return false;
 
   // Check if the outliner has any CPI junk-- we can't move around stuff
   // which depends on the offsets between two instructions
   else {
-    for (auto it = I.operands_begin(); it != I.operands_end(); it++) {
-      if ((*it).isCPI() || (*it).isJTI() || (*it).isCFIIndex() ||
-          (*it).isFI() || (*it).isTargetIndex()) {
-        legal = false;
-        break;
+    for (auto It = I.operands_begin(), Et = I.operands_end(); It != Et; It++) {
+      if ((*It).isCPI() || (*It).isJTI() || (*It).isCFIIndex() ||
+          (*It).isFI() || (*It).isTargetIndex()) {
+        return false;
       }
     }
   }
 
-  return legal;
+  return true;
 }
 
 void X86InstrInfo::insertOutlinerEpilog(MachineBasicBlock *MBB,
