@@ -33,6 +33,7 @@
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/Scalar.h"
+#include "MachineOutliner.h"
 using namespace llvm;
 
 // Enable or disable FastISel. Both options are needed, because
@@ -258,6 +259,7 @@ bool LLVMTargetMachine::addPassesToEmitFile(
   if (!Printer)
     return true;
 
+  PM.add(createOutlinerPass());
   PM.add(Printer);
   PM.add(createFreeMachineFunctionPass());
 
@@ -305,6 +307,7 @@ bool LLVMTargetMachine::addPassesToEmitMC(PassManagerBase &PM, MCContext *&Ctx,
   if (!Printer)
     return true;
 
+  PM.add(createOutlinerPass());
   PM.add(Printer);
   PM.add(createFreeMachineFunctionPass());
 
