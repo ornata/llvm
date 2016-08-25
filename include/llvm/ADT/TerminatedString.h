@@ -549,18 +549,17 @@ public:
 template <typename InputContainer, typename CharLike>
 raw_ostream &
 operator<<(raw_ostream &OS,
-           const TerminatedStringList<InputContainer, CharLike> &Str) {
+           const TerminatedStringList<InputContainer, CharLike> &TS) {
   OS << "[";
 
-  auto It = Str.begin();
-  auto Et = Str.end();
-  for (; It != Et; It++) {
+  for (auto It = TS.begin(), Et = TS.end(); It != Et; It++) {
     OS << "'" << **It << "'"
        << ", ";
     It++;
   }
 
-  OS << "'" << **It << "']";
+  OS << "]";
+
   return OS;
 }
 
