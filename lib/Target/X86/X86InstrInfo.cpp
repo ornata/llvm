@@ -8802,13 +8802,15 @@ bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
 
   // Don't outline returns or basic block terminators.
   if (MI.isReturn() || MI.isTerminator())
-     return false;
-
-  // Don't outline anything that modifies or reads from the stack pointer.
-  else if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI))
     return false;
 
-  else if (MI.modifiesRegister(X86::RIP, &RI) || MI.readsRegister(X86::RIP, &RI))
+  // Don't outline anything that modifies or reads from the stack pointer.
+  else if (MI.modifiesRegister(X86::RSP, &RI) ||
+           MI.readsRegister(X86::RSP, &RI))
+    return false;
+
+  else if (MI.modifiesRegister(X86::RIP, &RI) ||
+           MI.readsRegister(X86::RIP, &RI))
     return false;
 
   // Don't outline the frame setup or destroy for a function
@@ -8832,7 +8834,8 @@ bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
   // Check if the outliner has any CPI junk-- we can't move around stuff
   // which depends on the offsets between two instructions
   else {
-    for (auto It = MI.operands_begin(), Et = MI.operands_end(); It != Et; It++) {
+    for (auto It = MI.operands_begin(), Et = MI.operands_end(); It != Et;
+         It++) {
       if ((*It).isCPI() || (*It).isJTI() || (*It).isCFIIndex() ||
           (*It).isFI() || (*It).isTargetIndex()) {
         return false;
