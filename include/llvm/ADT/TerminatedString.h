@@ -352,9 +352,8 @@ public:
 template <typename InputContainer, typename CharLike>
 raw_ostream &operator<<(raw_ostream &OS,
                         const TerminatedString<InputContainer, CharLike> &Str) {
-  for (auto &Ch : Str) {
+  for (auto &Ch : Str)
     OS << Ch;
-  }
   return OS;
 }
 
@@ -503,14 +502,9 @@ public:
   /// TerminatedStringList
   void erase(unsigned Idx) {
     assert(Idx < size_chars_ && "Out of range! (Idx >= size_chars)");
-
-    // errs() << *this << "\n";
-
     auto string_pair = stringContaining(Idx);
     string_pair.first->erase(string_pair.second);
     size_chars_--;
-
-    // errs() << *this << "\n";
   }
 
   /// erase(unsigned, unsigned): Remove the characters in the range [StartIdx,
@@ -519,8 +513,6 @@ public:
     assert(StartIdx < size_chars_ && "Out of range! (StartIdx >= size_chars)");
     assert(EndIdx < size_chars_ && "Out of range! (EndIdx >= size_chars)");
 
-    // errs() << *this << "\n";
-
     unsigned RangeLen = EndIdx - StartIdx;
     unsigned NumRemoved = 0;
 
@@ -528,8 +520,6 @@ public:
       erase(StartIdx);
       NumRemoved++;
     }
-
-    // errs() << *this << "\n";
   }
 
   ///---------------  Constructors for TerminatedStringLists ----------------///
@@ -551,12 +541,9 @@ raw_ostream &
 operator<<(raw_ostream &OS,
            const TerminatedStringList<InputContainer, CharLike> &TS) {
   OS << "[";
-
-  for (auto It = TS.begin(), Et = TS.end(); It != Et; It++) {
-    OS << "'" << **It << "'"
-       << ", ";
-    It++;
-  }
+  
+  for (auto It = TS.begin(), Et = TS.end(); It != Et; It++)
+    OS << "'" << **It << "'" << ", ";
 
   OS << "]";
 
