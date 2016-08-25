@@ -8819,7 +8819,7 @@ bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
   else if (MI.isCFIInstruction())
     return false;
 
-  else if (isLoadFromStackSlot(MI, dummy) || isStoreToStackSlot(MI, Dummy))
+  else if (isLoadFromStackSlot(MI, Dummy) || isStoreToStackSlot(MI, Dummy))
     return false;
 
   else if (isLoadFromStackSlotPostFE(MI, Dummy) ||
@@ -8832,7 +8832,7 @@ bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
   // Check if the outliner has any CPI junk-- we can't move around stuff
   // which depends on the offsets between two instructions
   else {
-    for (auto It = I.operands_begin(), Et = I.operands_end(); It != Et; It++) {
+    for (auto It = MI.operands_begin(), Et = MI.operands_end(); It != Et; It++) {
       if ((*It).isCPI() || (*It).isJTI() || (*It).isCFIIndex() ||
           (*It).isFI() || (*It).isTargetIndex()) {
         return false;
