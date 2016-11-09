@@ -19,6 +19,7 @@
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetMachine.h"
@@ -57,6 +58,14 @@ struct Candidate {
   }
 };
 
+/// Output for candidates for debugging purposes.
+raw_ostream& operator <<(raw_ostream& os, const Candidate& c) {
+    os << *(c.Str) << "\n";
+    os << "StartIdxInBB: " << c.StartIdxInBB << "\n";
+    os << "EndIdxInBB: " << c.EndIdxInBB << "\n";
+    return os;
+  }
+
 /// Helper struct that stores information about an actual outlined function.
 struct OutlinedFunction {
   MachineFunction *MF;       // The actual outlined function
@@ -81,19 +90,11 @@ struct OutlinedFunction {
         Id(Id_), OccurrenceCount(OccurrenceCount_) {}
 };
 
-/// Helper struct for the std::set in the outliner class.
-struct CompareInstructions {
-  bool operator()(const MachineInstr *lhs, const MachineInstr *rhs) const {
-    return ((lhs->getOpcode() < rhs->getOpcode()) &&
-            !(lhs->isIdenticalTo(*rhs)));
-  }
-};
 
 struct MachineOutliner : public ModulePass {
   static char ID;
 
-  // Map between instructions and numbers.
-  std::map<MachineInstr *, int, CompareInstructions> InstructionIntegerMap;
+  DenseMap<MachineInstr *, int, MachineInstrExpressionTrait> InstructionIntegerMap;
   STree *ST = nullptr;
 
   // Target information
@@ -150,7 +151,11 @@ void MachineOutliner::buildProxyString(ContainerType &Container,
                                        const TargetRegisterInfo *TRI,
                                        const TargetInstrInfo *TII) {
   for (auto BBI = BB->instr_begin(), BBE = BB->instr_end(); BBI != BBE; BBI++) {
+
+    // First, check if the current instruction is legal to outline at all
     bool IsSafeToOutline = TII->isLegalToOutline(*BBI);
+
+    // If it's not, give it a bad number
     if (!IsSafeToOutline) {
       Container.push_back(CurrIllegalInstrMapping);
       CurrIllegalInstrMapping--;
@@ -160,13 +165,14 @@ void MachineOutliner::buildProxyString(ContainerType &Container,
     else {
       auto Mapping = InstructionIntegerMap.find(&*BBI);
 
+      // It was found in the map...
       if (Mapping != InstructionIntegerMap.end()) {
         Container.push_back(Mapping->second);
       }
 
+      // Otherwise, it wasn't there, so we should put it there!
       else {
-        std::pair<MachineInstr *, int> NewMapElem(&*BBI, CurrLegalInstrMapping);
-        InstructionIntegerMap.insert(NewMapElem);
+        InstructionIntegerMap.insert(std::pair<MachineInstr *, int>(&*BBI, CurrLegalInstrMapping));
         Container.push_back(CurrLegalInstrMapping);
         CurrLegalInstrMapping++;
         CurrentFunctionID++;
@@ -203,6 +209,7 @@ void MachineOutliner::buildCandidateList(
     std::vector<MachineBasicBlock *> &Worklist) {
 
   String *CandidateString = ST->longestRepeatedSubstring();
+
   // FIXME: That 2 should be a target-dependent minimum length.
   if (CandidateString != nullptr && CandidateString->length() >= 2) {
     int FunctionsCreated = 0;
@@ -249,6 +256,12 @@ void MachineOutliner::buildCandidateList(
              (Occurrences = ST->findOccurrences(*CandidateString)));
 
     std::sort(CandidateList.begin(), CandidateList.end());
+
+    DEBUG(
+    for (size_t i = 0, e = CandidateList.size(); i < e; i++) {
+      dbgs() << "Candidate " << i << ": \n";
+      dbgs() << CandidateList[i] << "\n";
+    });
   }
 }
 
@@ -281,6 +294,11 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   const TargetInstrInfo *TII = target->getInstrInfo();
 
   /// Find where the occurrence we want to copy starts and ends.
+  DEBUG (
+  dbgs() << "OF.StartIdxInBB = " << OF.StartIdxInBB << "\n";
+  dbgs() << "OF.EndIdxInBB = " << OF.EndIdxInBB << "\n";
+  );
+
   int i;
   auto StartIt = OF.OccBB->instr_begin();
 
@@ -298,6 +316,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   TII->insertOutlinerEpilog(MBB, MF);
 
   MachineInstr *MI;
+
   while (EndIt != StartIt) {
     MI = OF.BBParent->CloneMachineInstr(&*EndIt);
     MBB->insert(MBB->instr_begin(), MI);
@@ -308,6 +327,15 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   MBB->insert(MBB->instr_begin(), MI);
 
   TII->insertOutlinerProlog(MBB, MF);
+
+  DEBUG (
+  dbgs() << "New function: \n";
+  dbgs() << *Name << ":\n";
+  for (auto MBB = MF.begin(), EBB = MF.end(); MBB != EBB; MBB++) {
+      (&(*MBB))->dump();
+  }
+  );
+
   return &MF;
 }
 
@@ -317,9 +345,9 @@ bool MachineOutliner::outline(Module &M,
                               std::vector<MachineBasicBlock *> &Worklist,
                               std::vector<Candidate> &CandidateList,
                               std::vector<OutlinedFunction> &FunctionList) {
+  StringCollection SC = ST->SC;
   bool OutlinedSomething = false;
   int Offset = 0;
-  StringCollection SC = ST->SC;
 
   /// Insert the newly created functions into the program.
   for (size_t i = 0; i < FunctionList.size(); i++) {
@@ -330,26 +358,30 @@ bool MachineOutliner::outline(Module &M,
   /// Replace the candidates with calls to their respective outlined functions.
   for (const Candidate &C : CandidateList) {
     int OffsetedStringStart = C.StartIdxInBB + Offset;
-    int OffsetedStringEnd = OffsetedStringStart + C.Length - 1;
+    int OffsetedStringEnd = OffsetedStringStart + C.Length;
 
     /// If this spot doesn't match with our string, we must have already
     /// outlined something from here. Therefore, we should skip it to avoid
     /// overlaps.
-    int j = 0;
-    bool AlreadyOutlinedFrom = false;
-    for (int i = OffsetedStringStart; i <= OffsetedStringEnd; i++) {
 
-      if (SC[i] != (*(C.Str))[j]) {
-        FunctionList[C.FunctionIdx].OccurrenceCount--;
-        AlreadyOutlinedFrom = true;
-        break;
+    // If the offsetted string starts below index 0, we must have overlapped
+    // something
+    bool AlreadyOutlinedFrom = (OffsetedStringStart < 0);
+
+    if (!AlreadyOutlinedFrom) {
+      int j = 0;
+      for (int i = OffsetedStringStart; i < OffsetedStringEnd; i++) {
+        if (SC[i] != (*(C.Str))[j]) {
+          FunctionList[C.FunctionIdx].OccurrenceCount--;
+          AlreadyOutlinedFrom = true;
+          break;
+        }
+        j++;
       }
-
-      j++;
     }
 
     if (AlreadyOutlinedFrom || FunctionList[C.FunctionIdx].OccurrenceCount < 2)
-      continue;
+      continue;      
 
     /// We have a candidate which doesn't conflict with any other candidates, so
     /// we can go ahead and outline it.
@@ -358,6 +390,7 @@ bool MachineOutliner::outline(Module &M,
 
     /// Update the proxy string.
     SC.insertBefore(OffsetedStringStart, FunctionList[C.FunctionIdx].Id);
+
     SC.erase(OffsetedStringStart + 1, OffsetedStringEnd + 1);
 
     /// Update the module.
@@ -428,13 +461,24 @@ bool MachineOutliner::runOnModule(Module &M) {
     }
   }
   // Find all of the candidates for outlining.
-  bool OutlinedSomething;
+  bool OutlinedSomething = false;
   std::vector<Candidate> CandidateList;
   std::vector<OutlinedFunction> FunctionList;
+
+  DEBUG (
+  dbgs() << "String before outlining:\n";
+  dbgs() << ST->SC << "\n";
+  );
 
   CurrentFunctionID = InstructionIntegerMap.size();
   buildCandidateList(CandidateList, FunctionList, Worklist);
   OutlinedSomething = outline(M, Worklist, CandidateList, FunctionList);
+
+  DEBUG (
+  dbgs() << "OutlinedSomething = " << OutlinedSomething << "\n";
+  dbgs() << "String after outlining:\n";
+  dbgs() << ST->SC << "\n";
+  );
 
   delete ST;
   return OutlinedSomething;
