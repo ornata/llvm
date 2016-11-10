@@ -68,6 +68,7 @@ raw_ostream& operator <<(raw_ostream& os, const Candidate& c) {
 
 /// Helper struct that stores information about an actual outlined function.
 struct OutlinedFunction {
+  bool Created;
   MachineFunction *MF;       // The actual outlined function
   MachineBasicBlock *OccBB;  // The FIRST occurrence of its string
   MachineFunction *BBParent; // The BBParent of OccBB
@@ -87,7 +88,9 @@ struct OutlinedFunction {
                    const int &OccurrenceCount_)
       : OccBB(OccBB_), BBParent(BBParent_), IdxInSC(IdxInSC_),
         StartIdxInBB(StartIdxInBB_), EndIdxInBB(EndIdxInBB_), Name(Name_),
-        Id(Id_), OccurrenceCount(OccurrenceCount_) {}
+        Id(Id_), OccurrenceCount(OccurrenceCount_){
+          Created = false;
+        }
 };
 
 
@@ -110,6 +113,7 @@ struct MachineOutliner : public ModulePass {
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MachineModuleInfo>();
     AU.addPreserved<MachineModuleInfo>();
+    AU.setPreservesAll();
     ModulePass::getAnalysisUsage(AU);
   }
 
@@ -319,11 +323,13 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 
   while (EndIt != StartIt) {
     MI = OF.BBParent->CloneMachineInstr(&*EndIt);
+    MI->dropMemRefs();
     MBB->insert(MBB->instr_begin(), MI);
     EndIt--;
   }
 
   MI = OF.BBParent->CloneMachineInstr(&*EndIt);
+  MI->dropMemRefs();
   MBB->insert(MBB->instr_begin(), MI);
 
   TII->insertOutlinerProlog(MBB, MF);
@@ -348,12 +354,6 @@ bool MachineOutliner::outline(Module &M,
   StringCollection SC = ST->SC;
   bool OutlinedSomething = false;
   int Offset = 0;
-
-  /// Insert the newly created functions into the program.
-  for (size_t i = 0; i < FunctionList.size(); i++) {
-    OutlinedFunction OF = FunctionList[i];
-    FunctionList[i].MF = createOutlinedFunction(M, OF);
-  }
 
   /// Replace the candidates with calls to their respective outlined functions.
   for (const Candidate &C : CandidateList) {
@@ -381,7 +381,14 @@ bool MachineOutliner::outline(Module &M,
     }
 
     if (AlreadyOutlinedFrom || FunctionList[C.FunctionIdx].OccurrenceCount < 2)
-      continue;      
+      continue;
+
+    // If the function hasn't been created yet, then insert it into the program.
+    if (FunctionList[C.FunctionIdx].Created == false) {
+      OutlinedFunction OF = FunctionList[C.FunctionIdx];
+      FunctionList[C.FunctionIdx].MF = createOutlinedFunction(M, OF); 
+      FunctionList[C.FunctionIdx].Created = true;           
+    }
 
     /// We have a candidate which doesn't conflict with any other candidates, so
     /// we can go ahead and outline it.
@@ -465,22 +472,12 @@ bool MachineOutliner::runOnModule(Module &M) {
   std::vector<Candidate> CandidateList;
   std::vector<OutlinedFunction> FunctionList;
 
-  DEBUG (
-  dbgs() << "String before outlining:\n";
-  dbgs() << ST->SC << "\n";
-  );
-
   CurrentFunctionID = InstructionIntegerMap.size();
   buildCandidateList(CandidateList, FunctionList, Worklist);
   OutlinedSomething = outline(M, Worklist, CandidateList, FunctionList);
 
-  DEBUG (
-  dbgs() << "OutlinedSomething = " << OutlinedSomething << "\n";
-  dbgs() << "String after outlining:\n";
-  dbgs() << ST->SC << "\n";
-  );
-
   delete ST;
+
   return OutlinedSomething;
 }
 
