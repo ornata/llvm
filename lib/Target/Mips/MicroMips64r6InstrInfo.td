@@ -67,6 +67,9 @@ class SD_MM64R6_ENC : LD_SD_32_2R_OFFSET16_FM_MMR6<"sd", 0b110110>;
 class DSRL_MM64R6_ENC : POOL32S_2RSA5B0_FM_MMR6<"dsrl", 0b001000000>;
 class DSRL32_MM64R6_ENC : POOL32S_2RSA5B0_FM_MMR6<"dsrl32", 0b001001000>;
 class DSRLV_MM64R6_ENC : POOL32S_3R_FM_MMR6<"dsrlv", 0b001010000>;
+class DBITSWAP_MM64R6_ENC : POOL32S_DBITSWAP_FM_MMR6<"dbitswap">;
+class DLSA_MM64R6_ENC : POOL32S_3RSA_FM_MMR6<"dlsa">;
+class LWUPC_MM64R6_ENC : PCREL_1ROFFSET19_FM_MMR6<"lwupc">;
 
 //===----------------------------------------------------------------------===//
 //
@@ -78,7 +81,7 @@ class DAUI_MMR6_DESC_BASE<string instr_asm, RegisterOperand GPROpnd,
                           InstrItinClass Itin>
     : MMR6Arch<instr_asm>, MipsR6Inst {
   dag OutOperandList = (outs GPROpnd:$rt);
-  dag InOperandList = (ins GPROpnd:$rs, simm16:$imm);
+  dag InOperandList = (ins GPROpnd:$rs, uimm16:$imm);
   string AsmString = !strconcat(instr_asm, "\t$rt, $rs, $imm");
   list<dag> Pattern = [];
   InstrItinClass Itinerary = Itin;
@@ -89,8 +92,8 @@ class DAHI_DATI_DESC_BASE<string instr_asm, RegisterOperand GPROpnd,
                           InstrItinClass Itin>
     : MMR6Arch<instr_asm>, MipsR6Inst {
   dag OutOperandList = (outs GPROpnd:$rs);
-  dag InOperandList = (ins GPROpnd:$rt, simm16:$imm);
-  string AsmString = !strconcat(instr_asm, "\t$rt, $imm");
+  dag InOperandList = (ins GPROpnd:$rt, uimm16:$imm);
+  string AsmString = !strconcat(instr_asm, "\t$rt, $rs, $imm");
   string Constraints = "$rs = $rt";
   InstrItinClass Itinerary = Itin;
 }
@@ -323,6 +326,32 @@ class SD_MM64R6_DESC {
   string DecoderMethod = "DecodeMemMMImm16";
 }
 
+class DBITSWAP_MM64R6_DESC {
+  dag OutOperandList = (outs GPR64Opnd:$rd);
+  dag InOperandList = (ins GPR64Opnd:$rt);
+  string AsmString = !strconcat("dbitswap", "\t$rd, $rt");
+  list<dag> Pattern = [];
+  InstrItinClass Itinerary = II_DBITSWAP;
+}
+
+class DLSA_MM64R6_DESC {
+  dag OutOperandList = (outs GPR64Opnd:$rd);
+  dag InOperandList = (ins GPR64Opnd:$rt, GPR64Opnd:$rs, uimm2_plus1:$sa);
+  string AsmString = "dlsa\t$rt, $rs, $rd, $sa";
+  list<dag> Pattern = [];
+  InstrItinClass Itinerary = II_DLSA;
+}
+
+class LWUPC_MM64R6_DESC {
+  dag OutOperandList = (outs GPR64Opnd:$rt);
+  dag InOperandList = (ins simm19_lsl2:$offset);
+  string AsmString = "lwupc\t$rt, $offset";
+  list<dag> Pattern = [];
+  InstrItinClass Itinerary = II_LWUPC;
+  bit mayLoad = 1;
+  bit IsPCRelativeLoad = 1;
+}
+
 //===----------------------------------------------------------------------===//
 //
 // Instruction Definitions
@@ -331,8 +360,10 @@ class SD_MM64R6_DESC {
 
 let DecoderNamespace = "MicroMipsR6" in {
   def DAUI_MM64R6 : StdMMR6Rel, DAUI_MMR6_DESC, DAUI_MMR6_ENC, ISA_MICROMIPS64R6;
-  def DAHI_MM64R6 : StdMMR6Rel, DAHI_MMR6_DESC, DAHI_MMR6_ENC, ISA_MICROMIPS64R6;
-  def DATI_MM64R6 : StdMMR6Rel, DATI_MMR6_DESC, DATI_MMR6_ENC, ISA_MICROMIPS64R6;
+  let DecoderMethod = "DecodeDAHIDATIMMR6" in {
+    def DAHI_MM64R6 : StdMMR6Rel, DAHI_MMR6_DESC, DAHI_MMR6_ENC, ISA_MICROMIPS64R6;
+    def DATI_MM64R6 : StdMMR6Rel, DATI_MMR6_DESC, DATI_MMR6_ENC, ISA_MICROMIPS64R6;
+  }
   def DEXT_MM64R6 : StdMMR6Rel, DEXT_MMR6_DESC, DEXT_MMR6_ENC,
                     ISA_MICROMIPS64R6;
   def DEXTM_MM64R6 : StdMMR6Rel, DEXTM_MMR6_DESC, DEXTM_MMR6_ENC,
@@ -426,6 +457,12 @@ let DecoderNamespace = "MicroMipsR6" in {
   def DSRL32_MM64R6 : StdMMR6Rel, DSRL32_MM64R6_ENC, DSRL32_MM64R6_DESC,
                       ISA_MICROMIPS64R6;
   def DSRLV_MM64R6 : StdMMR6Rel, DSRLV_MM64R6_ENC, DSRLV_MM64R6_DESC,
+                     ISA_MICROMIPS64R6;
+  def DBITSWAP_MM64R6 : R6MMR6Rel, DBITSWAP_MM64R6_ENC, DBITSWAP_MM64R6_DESC,
+                        ISA_MICROMIPS64R6;
+  def DLSA_MM64R6 : R6MMR6Rel, DLSA_MM64R6_ENC, DLSA_MM64R6_DESC,
+                    ISA_MICROMIPS64R6;
+  def LWUPC_MM64R6 : R6MMR6Rel, LWUPC_MM64R6_ENC, LWUPC_MM64R6_DESC,
                      ISA_MICROMIPS64R6;
 }
 

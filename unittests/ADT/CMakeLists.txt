@@ -9,6 +9,7 @@ set(ADTSources
   ArrayRefTest.cpp
   BitmaskEnumTest.cpp
   BitVectorTest.cpp
+  BumpPtrListTest.cpp
   DAGDeltaAlgorithmTest.cpp
   DeltaAlgorithmTest.cpp
   DenseMapTest.cpp
@@ -17,10 +18,12 @@ set(ADTSources
   FoldingSet.cpp
   FunctionRefTest.cpp
   HashingTest.cpp
-  ilistTestTemp.cpp
   IListBaseTest.cpp
+  IListIteratorTest.cpp
   IListNodeBaseTest.cpp
+  IListNodeTest.cpp
   IListSentinelTest.cpp
+  IListTest.cpp
   ImmutableMapTest.cpp
   ImmutableSetTest.cpp
   IntEqClassesTest.cpp
@@ -43,14 +46,17 @@ set(ADTSources
   ScopeExitTest.cpp
   SequenceTest.cpp
   SetVectorTest.cpp
+  SimpleIListTest.cpp
   SmallPtrSetTest.cpp
   SmallStringTest.cpp
   SmallVectorTest.cpp
   SparseBitVectorTest.cpp
   SparseMultiSetTest.cpp
   SparseSetTest.cpp
+  StringExtrasTest.cpp
   StringMapTest.cpp
   StringRefTest.cpp
+  StringSwitchTest.cpp
   TinyPtrVectorTest.cpp
   TripleTest.cpp
   TwineTest.cpp

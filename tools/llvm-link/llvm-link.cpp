@@ -82,8 +82,11 @@ static cl::opt<bool>
 Force("f", cl::desc("Enable binary output on terminals"));
 
 static cl::opt<bool>
-OutputAssembly("S",
-         cl::desc("Write output as LLVM assembly"), cl::Hidden);
+    DisableLazyLoad("disable-lazy-loading",
+                    cl::desc("Disable lazy module loading"));
+
+static cl::opt<bool>
+    OutputAssembly("S", cl::desc("Write output as LLVM assembly"), cl::Hidden);
 
 static cl::opt<bool>
 Verbose("v", cl::desc("Print information about actions taken"));
@@ -105,6 +108,8 @@ static cl::opt<bool> PreserveAssemblyUseListOrder(
     cl::desc("Preserve use-list order when writing LLVM assembly."),
     cl::init(false), cl::Hidden);
 
+static ExitOnError ExitOnErr;
+
 // Read the specified bitcode file in and return it. This routine searches the
 // link path for the specified file to try to find it...
 //
@@ -114,15 +119,19 @@ static std::unique_ptr<Module> loadFile(const char *argv0,
                                         bool MaterializeMetadata = true) {
   SMDiagnostic Err;
   if (Verbose) errs() << "Loading '" << FN << "'\n";
-  std::unique_ptr<Module> Result =
-      getLazyIRFileModule(FN, Err, Context, !MaterializeMetadata);
+  std::unique_ptr<Module> Result;
+  if (DisableLazyLoad)
+    Result = parseIRFile(FN, Err, Context);
+  else
+    Result = getLazyIRFileModule(FN, Err, Context, !MaterializeMetadata);
+
   if (!Result) {
     Err.print(argv0, errs());
     return nullptr;
   }
 
   if (MaterializeMetadata) {
-    Result->materializeMetadata();
+    ExitOnErr(Result->materializeMetadata());
     UpgradeDebugInfo(*Result);
   }
 
@@ -257,7 +266,7 @@ static bool importFunctions(const char *argv0, LLVMContext &Context,
     auto &Entry = ModuleToGlobalsToImportMap[SrcModule.getModuleIdentifier()];
     Entry.insert(F);
 
-    F->materialize();
+    ExitOnErr(F->materialize());
   }
 
   // Do the actual import of globals now, one Module at a time
@@ -270,7 +279,7 @@ static bool importFunctions(const char *argv0, LLVMContext &Context,
 
     // If modules were created with lazy metadata loading, materialize it
     // now, before linking it (otherwise this will be a noop).
-    SrcModule->materializeMetadata();
+    ExitOnErr(SrcModule->materializeMetadata());
     UpgradeDebugInfo(*SrcModule);
 
     // Linkage Promotion and renaming
@@ -340,6 +349,8 @@ int main(int argc, char **argv) {
   // Print a stack trace if we signal out.
   sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
+
+  ExitOnErr.setBanner(std::string(argv[0]) + ": ");
 
   LLVMContext Context;
   Context.setDiagnosticHandler(diagnosticHandlerWithContext, nullptr, true);

@@ -74,13 +74,11 @@ namespace {
       AU.addPreserved<MachineLoopInfo>();
       MachineFunctionPass::getAnalysisUsage(AU);
     }
-    const char *getPassName() const override {
-      return "Hexagon Packetizer";
-    }
+    StringRef getPassName() const override { return "Hexagon Packetizer"; }
     bool runOnMachineFunction(MachineFunction &Fn) override;
     MachineFunctionProperties getRequiredProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
 
   private:

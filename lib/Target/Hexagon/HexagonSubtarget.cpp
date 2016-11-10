@@ -66,7 +66,7 @@ static cl::opt<bool> DisableHexagonMISched("disable-hexagon-misched",
   cl::desc("Disable Hexagon MI Scheduling"));
 
 static cl::opt<bool> EnableSubregLiveness("hexagon-subreg-liveness",
-  cl::Hidden, cl::ZeroOrMore, cl::init(false),
+  cl::Hidden, cl::ZeroOrMore, cl::init(true),
   cl::desc("Enable subregister liveness tracking for Hexagon"));
 
 static cl::opt<bool> OverrideLongCalls("hexagon-long-calls",
@@ -263,6 +263,10 @@ bool HexagonSubtarget::isBestZeroLatency(SUnit *Src, SUnit *Dst,
       const HexagonInstrInfo *TII) const {
   MachineInstr &SrcInst = *Src->getInstr();
   MachineInstr &DstInst = *Dst->getInstr();
+
+  // Ignore Boundary SU nodes as these have null instructions.
+  if (Dst->isBoundaryNode())
+    return false;
 
   if (SrcInst.isPHI() || DstInst.isPHI())
     return false;

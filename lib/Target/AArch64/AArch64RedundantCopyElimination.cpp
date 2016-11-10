@@ -54,9 +54,9 @@ public:
   bool runOnMachineFunction(MachineFunction &MF) override;
   MachineFunctionProperties getRequiredProperties() const override {
     return MachineFunctionProperties().set(
-        MachineFunctionProperties::Property::AllVRegsAllocated);
+        MachineFunctionProperties::Property::NoVRegs);
   }
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "AArch64 Redundant Copy Elimination";
   }
 };

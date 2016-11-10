@@ -84,8 +84,8 @@ unsigned TargetInstrInfo::getInlineAsmLength(const char *Str,
     if (*Str == '\n' || strncmp(Str, MAI.getSeparatorString(),
                                 strlen(MAI.getSeparatorString())) == 0) {
       atInsnStart = true;
-    } else if (strncmp(Str, MAI.getCommentString(),
-                       strlen(MAI.getCommentString())) == 0) {
+    } else if (strncmp(Str, MAI.getCommentString().data(),
+                       MAI.getCommentString().size()) == 0) {
       // Stop counting as an instruction after a comment until the next
       // separator.
       atInsnStart = false;
@@ -119,7 +119,7 @@ TargetInstrInfo::ReplaceTailWithBranchTo(MachineBasicBlock::iterator Tail,
 
   // If MBB isn't immediately before MBB, insert a branch to it.
   if (++MachineFunction::iterator(MBB) != MachineFunction::iterator(NewDest))
-    InsertBranch(*MBB, NewDest, nullptr, SmallVector<MachineOperand, 0>(), DL);
+    insertBranch(*MBB, NewDest, nullptr, SmallVector<MachineOperand, 0>(), DL);
   MBB->addSuccessor(NewDest);
 }
 
@@ -439,15 +439,18 @@ static MachineInstr *foldPatchpoint(MachineFunction &MF, MachineInstr &MI,
   switch (MI.getOpcode()) {
   case TargetOpcode::STACKMAP: {
     // StackMapLiveValues are foldable
-    StackMapOpers opers(&MI);
-    StartIdx = opers.getVarIdx();
+    StartIdx = StackMapOpers(&MI).getVarIdx();
     break;
   }
   case TargetOpcode::PATCHPOINT: {
     // For PatchPoint, the call args are not foldable (even if reported in the
     // stackmap e.g. via anyregcc).
-    PatchPointOpers opers(&MI);
-    StartIdx = opers.getVarIdx();
+    StartIdx = PatchPointOpers(&MI).getVarIdx();
+    break;
+  }
+  case TargetOpcode::STATEPOINT: {
+    // For statepoints, fold deopt and gc arguments, but not call arguments.
+    StartIdx = StatepointOpers(&MI).getVarIdx();
     break;
   }
   default:
@@ -515,7 +518,8 @@ MachineInstr *TargetInstrInfo::foldMemoryOperand(MachineInstr &MI,
   MachineInstr *NewMI = nullptr;
 
   if (MI.getOpcode() == TargetOpcode::STACKMAP ||
-      MI.getOpcode() == TargetOpcode::PATCHPOINT) {
+      MI.getOpcode() == TargetOpcode::PATCHPOINT ||
+      MI.getOpcode() == TargetOpcode::STATEPOINT) {
     // Fold stackmap/patchpoint.
     NewMI = foldPatchpoint(MF, MI, Ops, FI, *this);
     if (NewMI)
@@ -796,7 +800,8 @@ MachineInstr *TargetInstrInfo::foldMemoryOperand(MachineInstr &MI,
   int FrameIndex = 0;
 
   if ((MI.getOpcode() == TargetOpcode::STACKMAP ||
-       MI.getOpcode() == TargetOpcode::PATCHPOINT) &&
+       MI.getOpcode() == TargetOpcode::PATCHPOINT ||
+       MI.getOpcode() == TargetOpcode::STATEPOINT) &&
       isLoadFromStackSlot(LoadMI, FrameIndex)) {
     // Fold stackmap/patchpoint.
     NewMI = foldPatchpoint(MF, MI, Ops, FrameIndex, *this);
@@ -861,7 +866,7 @@ bool TargetInstrInfo::isReallyTriviallyReMaterializableGeneric(
     return false;
 
   // Avoid instructions which load from potentially varying memory.
-  if (MI.mayLoad() && !MI.isInvariantLoad(AA))
+  if (MI.mayLoad() && !MI.isDereferenceableInvariantLoad(AA))
     return false;
 
   // If any of the registers accessed are non-constant, conservatively assume
@@ -879,7 +884,7 @@ bool TargetInstrInfo::isReallyTriviallyReMaterializableGeneric(
         // If the physreg has no defs anywhere, it's just an ambient register
         // and we can freely move its uses. Alternatively, if it's allocatable,
         // it could get allocated to something with a def during allocation.
-        if (!MRI.isConstantPhysReg(Reg, MF))
+        if (!MRI.isConstantPhysReg(Reg))
           return false;
       } else {
         // A physreg def. We can't remat it.
@@ -1093,35 +1098,6 @@ int TargetInstrInfo::computeDefOperandLatency(
 
   // ...operand lookup required
   return -1;
-}
-
-unsigned TargetInstrInfo::computeOperandLatency(
-    const InstrItineraryData *ItinData, const MachineInstr &DefMI,
-    unsigned DefIdx, const MachineInstr *UseMI, unsigned UseIdx) const {
-
-  int DefLatency = computeDefOperandLatency(ItinData, DefMI);
-  if (DefLatency >= 0)
-    return DefLatency;
-
-  assert(ItinData && !ItinData->isEmpty() && "computeDefOperandLatency fail");
-
-  int OperLatency = 0;
-  if (UseMI)
-    OperLatency = getOperandLatency(ItinData, DefMI, DefIdx, *UseMI, UseIdx);
-  else {
-    unsigned DefClass = DefMI.getDesc().getSchedClass();
-    OperLatency = ItinData->getOperandCycle(DefClass, DefIdx);
-  }
-  if (OperLatency >= 0)
-    return OperLatency;
-
-  // No operand latency was found.
-  unsigned InstrLatency = getInstrLatency(ItinData, DefMI);
-
-  // Expected latency is the max of the stage latency and itinerary props.
-  InstrLatency = std::max(InstrLatency,
-                          defaultDefLatency(ItinData->SchedModel, DefMI));
-  return InstrLatency;
 }
 
 bool TargetInstrInfo::getRegSequenceInputs(

@@ -1359,7 +1359,8 @@ class BaseMemOpClusterMutation : public ScheduleDAGMutation {
         : SU(su), BaseReg(reg), Offset(ofs) {}
 
     bool operator<(const MemOpInfo&RHS) const {
-      return std::tie(BaseReg, Offset) < std::tie(RHS.BaseReg, RHS.Offset);
+      return std::tie(BaseReg, Offset, SU->NodeNum) <
+             std::tie(RHS.BaseReg, RHS.Offset, RHS.SU->NodeNum);
     }
   };
 
@@ -1793,7 +1794,6 @@ void SchedBoundary::reset() {
   Available.clear();
   Pending.clear();
   CheckPending = false;
-  NextSUs.clear();
   CurrCycle = 0;
   CurrMOps = 0;
   MinReadyCycle = UINT_MAX;
@@ -1994,23 +1994,6 @@ void SchedBoundary::releaseNode(SUnit *SU, unsigned ReadyCycle) {
     Pending.push(SU);
   else
     Available.push(SU);
-
-  // Record this node as an immediate dependent of the scheduled node.
-  NextSUs.insert(SU);
-}
-
-void SchedBoundary::releaseTopNode(SUnit *SU) {
-  if (SU->isScheduled)
-    return;
-
-  releaseNode(SU, SU->TopReadyCycle);
-}
-
-void SchedBoundary::releaseBottomNode(SUnit *SU) {
-  if (SU->isScheduled)
-    return;
-
-  releaseNode(SU, SU->BotReadyCycle);
 }
 
 /// Move the boundary of scheduled code by one cycle.
@@ -2861,9 +2844,8 @@ void GenericScheduler::tryCandidate(SchedCandidate &Cand,
   bool SameBoundary = Zone != nullptr;
   if (SameBoundary) {
     // For loops that are acyclic path limited, aggressively schedule for
-    // latency.  This can result in very long dependence chains scheduled in
-    // sequence, so once every cycle (when CurrMOps == 0), switch to normal
-    // heuristics.
+    // latency. Within an single cycle, whenever CurrMOps > 0, allow normal
+    // heuristics to take precedence.
     if (Rem.IsAcyclicLatencyLimited && !Zone->getCurrMOps() &&
         tryLatency(TryCand, Cand, *Zone))
       return;
@@ -2919,13 +2901,6 @@ void GenericScheduler::tryCandidate(SchedCandidate &Cand,
     // For acyclic path limited loops, latency was already checked above.
     if (!RegionPolicy.DisableLatencyHeuristic && TryCand.Policy.ReduceLatency &&
         !Rem.IsAcyclicLatencyLimited && tryLatency(TryCand, Cand, *Zone))
-      return;
-
-    // Prefer immediate defs/users of the last scheduled instruction. This is a
-    // local pressure avoidance strategy that also makes the machine code
-    // readable.
-    if (tryGreater(Zone->isNextSU(TryCand.SU), Zone->isNextSU(Cand.SU),
-                   TryCand, Cand, NextDefUse))
       return;
 
     // Fall through to original instruction order.
@@ -3292,7 +3267,8 @@ void PostGenericScheduler::schedNode(SUnit *SU, bool IsTopNode) {
 
 /// Create a generic scheduler with no vreg liveness or DAG mutation passes.
 static ScheduleDAGInstrs *createGenericSchedPostRA(MachineSchedContext *C) {
-  return new ScheduleDAGMI(C, make_unique<PostGenericScheduler>(C), /*IsPostRA=*/true);
+  return new ScheduleDAGMI(C, make_unique<PostGenericScheduler>(C),
+                           /*RemoveKillFlags=*/true);
 }
 
 //===----------------------------------------------------------------------===//

@@ -21,10 +21,6 @@
 #include "llvm/Target/TargetLowering.h"
 
 namespace llvm {
-
-// Return true when the given node fits in a positive half word.
-bool isPositiveHalfWord(SDNode *N);
-
   namespace HexagonISD {
     enum NodeType : unsigned {
       OP_BEGIN = ISD::BUILTIN_OP_END,
@@ -124,6 +120,9 @@ bool isPositiveHalfWord(SDNode *N);
     // Should we expand the build vector with shuffles?
     bool shouldExpandBuildVectorWithShuffles(EVT VT,
         unsigned DefinedValues) const override;
+
+    bool isShuffleMaskLegal(const SmallVectorImpl<int> &Mask, EVT VT)
+        const override;
 
     SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
     const char *getTargetNodeName(unsigned Opcode) const override;

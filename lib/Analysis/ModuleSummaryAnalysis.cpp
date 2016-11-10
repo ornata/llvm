@@ -18,6 +18,7 @@
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/IndirectCallPromotionAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
@@ -63,12 +64,24 @@ static void findRefEdges(const User *CurUser, DenseSet<const Value *> &RefEdges,
   }
 }
 
+static CalleeInfo::HotnessType getHotness(uint64_t ProfileCount,
+                                          ProfileSummaryInfo *PSI) {
+  if (!PSI)
+    return CalleeInfo::HotnessType::Unknown;
+  if (PSI->isHotCount(ProfileCount))
+    return CalleeInfo::HotnessType::Hot;
+  if (PSI->isColdCount(ProfileCount))
+    return CalleeInfo::HotnessType::Cold;
+  return CalleeInfo::HotnessType::None;
+}
+
 static void computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
-                                   const Function &F, BlockFrequencyInfo *BFI) {
-  // Summary not currently supported for anonymous functions, they must
-  // be renamed.
-  if (!F.hasName())
-    return;
+                                   const Function &F, BlockFrequencyInfo *BFI,
+                                   ProfileSummaryInfo *PSI,
+                                   SmallPtrSetImpl<GlobalValue *> &LocalsUsed) {
+  // Summary not currently supported for anonymous functions, they should
+  // have been named.
+  assert(F.hasName());
 
   unsigned NumInsts = 0;
   // Map from callee ValueId to profile count. Used to accumulate profile
@@ -77,41 +90,70 @@ static void computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
   DenseMap<GlobalValue::GUID, CalleeInfo> IndirectCallEdges;
   DenseSet<const Value *> RefEdges;
   ICallPromotionAnalysis ICallAnalysis;
+  bool HasLocalsInUsed = !LocalsUsed.empty();
 
   SmallPtrSet<const User *, 8> Visited;
   for (const BasicBlock &BB : F)
     for (const Instruction &I : BB) {
-      if (!isa<DbgInfoIntrinsic>(I))
-        ++NumInsts;
-
-      if (auto CS = ImmutableCallSite(&I)) {
-        auto *CalledFunction = CS.getCalledFunction();
-        // Check if this is a direct call to a known function.
-        if (CalledFunction) {
-          if (CalledFunction->hasName() && !CalledFunction->isIntrinsic()) {
-            auto ScaledCount = BFI ? BFI->getBlockProfileCount(&BB) : None;
-            auto *CalleeId =
-                M.getValueSymbolTable().lookup(CalledFunction->getName());
-            CallGraphEdges[CalleeId] +=
-                (ScaledCount ? ScaledCount.getValue() : 0);
-          }
-        } else {
-          // Otherwise, check for an indirect call (call to a non-const value
-          // that isn't an inline assembly call).
-          const CallInst *CI = dyn_cast<CallInst>(&I);
-          if (CS.getCalledValue() && !isa<Constant>(CS.getCalledValue()) &&
-              !(CI && CI->isInlineAsm())) {
-            uint32_t NumVals, NumCandidates;
-            uint64_t TotalCount;
-            auto CandidateProfileData =
-                ICallAnalysis.getPromotionCandidatesForInstruction(
-                    &I, NumVals, TotalCount, NumCandidates);
-            for (auto &Candidate : CandidateProfileData)
-              IndirectCallEdges[Candidate.Value] += Candidate.Count;
-          }
-        }
-      }
+      if (isa<DbgInfoIntrinsic>(I))
+        continue;
+      ++NumInsts;
       findRefEdges(&I, RefEdges, Visited);
+      auto CS = ImmutableCallSite(&I);
+      if (!CS)
+        continue;
+
+      const auto *CI = dyn_cast<CallInst>(&I);
+      // Since we don't know exactly which local values are referenced in inline
+      // assembly, conservatively reference all of them from this function, to
+      // ensure we don't export a reference (which would require renaming and
+      // promotion).
+      if (HasLocalsInUsed && CI && CI->isInlineAsm())
+        RefEdges.insert(LocalsUsed.begin(), LocalsUsed.end());
+
+      auto *CalledValue = CS.getCalledValue();
+      auto *CalledFunction = CS.getCalledFunction();
+      // Check if this is an alias to a function. If so, get the
+      // called aliasee for the checks below.
+      if (auto *GA = dyn_cast<GlobalAlias>(CalledValue)) {
+        assert(!CalledFunction && "Expected null called function in callsite for alias");
+        CalledFunction = dyn_cast<Function>(GA->getBaseObject());
+      }
+      // Check if this is a direct call to a known function.
+      if (CalledFunction) {
+        // Skip intrinsics.
+        if (CalledFunction->isIntrinsic())
+          continue;
+        // We should have named any anonymous globals
+        assert(CalledFunction->hasName());
+        auto ScaledCount = BFI ? BFI->getBlockProfileCount(&BB) : None;
+        // Use the original CalledValue, in case it was an alias. We want
+        // to record the call edge to the alias in that case. Eventually
+        // an alias summary will be created to associate the alias and
+        // aliasee.
+        auto *CalleeId =
+            M.getValueSymbolTable().lookup(CalledValue->getName());
+
+        auto Hotness = ScaledCount ? getHotness(ScaledCount.getValue(), PSI)
+                                   : CalleeInfo::HotnessType::Unknown;
+        CallGraphEdges[CalleeId].updateHotness(Hotness);
+      } else {
+        // Skip inline assembly calls.
+        if (CI && CI->isInlineAsm())
+          continue;
+        // Skip direct calls.
+        if (!CS.getCalledValue() || isa<Constant>(CS.getCalledValue()))
+          continue;
+
+        uint32_t NumVals, NumCandidates;
+        uint64_t TotalCount;
+        auto CandidateProfileData =
+            ICallAnalysis.getPromotionCandidatesForInstruction(
+                &I, NumVals, TotalCount, NumCandidates);
+        for (auto &Candidate : CandidateProfileData)
+          IndirectCallEdges[Candidate.Value].updateHotness(
+              getHotness(Candidate.Count, PSI));
+      }
     }
 
   GlobalValueSummary::GVFlags Flags(F);
@@ -135,15 +177,43 @@ static void computeVariableSummary(ModuleSummaryIndex &Index,
   Index.addGlobalValueSummary(V.getName(), std::move(GVarSummary));
 }
 
+static void computeAliasSummary(ModuleSummaryIndex &Index,
+                                const GlobalAlias &A) {
+  GlobalValueSummary::GVFlags Flags(A);
+  std::unique_ptr<AliasSummary> AS = llvm::make_unique<AliasSummary>(Flags);
+  auto *Aliasee = A.getBaseObject();
+  auto *AliaseeSummary = Index.getGlobalValueSummary(*Aliasee);
+  assert(AliaseeSummary && "Alias expects aliasee summary to be parsed");
+  AS->setAliasee(AliaseeSummary);
+  Index.addGlobalValueSummary(A.getName(), std::move(AS));
+}
+
 ModuleSummaryIndex llvm::buildModuleSummaryIndex(
     const Module &M,
-    std::function<BlockFrequencyInfo *(const Function &F)> GetBFICallback) {
+    std::function<BlockFrequencyInfo *(const Function &F)> GetBFICallback,
+    ProfileSummaryInfo *PSI) {
   ModuleSummaryIndex Index;
-  // Check if the module can be promoted, otherwise just disable importing from
-  // it by not emitting any summary.
-  // FIXME: we could still import *into* it most of the time.
-  if (!moduleCanBeRenamedForThinLTO(M))
-    return Index;
+
+  // Identify the local values in the llvm.used and llvm.compiler.used sets,
+  // which should not be exported as they would then require renaming and
+  // promotion, but we may have opaque uses e.g. in inline asm. We collect them
+  // here because we use this information to mark functions containing inline
+  // assembly calls as not importable.
+  SmallPtrSet<GlobalValue *, 8> LocalsUsed;
+  SmallPtrSet<GlobalValue *, 8> Used;
+  // First collect those in the llvm.used set.
+  collectUsedGlobalVariables(M, Used, /*CompilerUsed*/ false);
+  for (auto *V : Used) {
+    if (V->hasLocalLinkage())
+      LocalsUsed.insert(V);
+  }
+  Used.clear();
+  // Next collect those in the llvm.compiler.used set.
+  collectUsedGlobalVariables(M, Used, /*CompilerUsed*/ true);
+  for (auto *V : Used) {
+    if (V->hasLocalLinkage())
+      LocalsUsed.insert(V);
+  }
 
   // Compute summaries for all functions defined in module, and save in the
   // index.
@@ -162,7 +232,7 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
       BFI = BFIPtr.get();
     }
 
-    computeFunctionSummary(Index, M, F, BFI);
+    computeFunctionSummary(Index, M, F, BFI, PSI, LocalsUsed);
   }
 
   // Compute summaries for all variables defined in module, and save in the
@@ -172,6 +242,18 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
       continue;
     computeVariableSummary(Index, G);
   }
+
+  // Compute summaries for all aliases defined in module, and save in the
+  // index.
+  for (const GlobalAlias &A : M.aliases())
+    computeAliasSummary(Index, A);
+
+  for (auto *V : LocalsUsed) {
+    auto *Summary = Index.getGlobalValueSummary(*V);
+    assert(Summary && "Missing summary for global value");
+    Summary->setNoRename();
+  }
+
   return Index;
 }
 
@@ -179,10 +261,15 @@ char ModuleSummaryIndexAnalysis::PassID;
 
 ModuleSummaryIndex
 ModuleSummaryIndexAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
+  ProfileSummaryInfo &PSI = AM.getResult<ProfileSummaryAnalysis>(M);
   auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-  return buildModuleSummaryIndex(M, [&FAM](const Function &F) {
-    return &FAM.getResult<BlockFrequencyAnalysis>(*const_cast<Function *>(&F));
-  });
+  return buildModuleSummaryIndex(
+      M,
+      [&FAM](const Function &F) {
+        return &FAM.getResult<BlockFrequencyAnalysis>(
+            *const_cast<Function *>(&F));
+      },
+      &PSI);
 }
 
 char ModuleSummaryIndexWrapperPass::ID = 0;
@@ -202,11 +289,15 @@ ModuleSummaryIndexWrapperPass::ModuleSummaryIndexWrapperPass()
 }
 
 bool ModuleSummaryIndexWrapperPass::runOnModule(Module &M) {
-  Index = buildModuleSummaryIndex(M, [this](const Function &F) {
-    return &(this->getAnalysis<BlockFrequencyInfoWrapperPass>(
-                     *const_cast<Function *>(&F))
-                 .getBFI());
-  });
+  auto &PSI = *getAnalysis<ProfileSummaryInfoWrapperPass>().getPSI();
+  Index = buildModuleSummaryIndex(
+      M,
+      [this](const Function &F) {
+        return &(this->getAnalysis<BlockFrequencyInfoWrapperPass>(
+                         *const_cast<Function *>(&F))
+                     .getBFI());
+      },
+      &PSI);
   return false;
 }
 
@@ -218,42 +309,5 @@ bool ModuleSummaryIndexWrapperPass::doFinalization(Module &M) {
 void ModuleSummaryIndexWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
   AU.addRequired<BlockFrequencyInfoWrapperPass>();
-}
-
-bool llvm::moduleCanBeRenamedForThinLTO(const Module &M) {
-  // We cannot currently promote or rename anything used in inline assembly,
-  // which are not visible to the compiler. Detect a possible case by looking
-  // for a llvm.used local value, in conjunction with an inline assembly call
-  // in the module. Prevent importing of any modules containing these uses by
-  // suppressing generation of the index. This also prevents importing
-  // into this module, which is also necessary to avoid needing to rename
-  // in case of a name clash between a local in this module and an imported
-  // global.
-  // FIXME: If we find we need a finer-grained approach of preventing promotion
-  // and renaming of just the functions using inline assembly we will need to:
-  // - Add flag in the function summaries to identify those with inline asm.
-  // - Prevent importing of any functions with flag set.
-  // - Prevent importing of any global function with the same name as a
-  //   function in current module that has the flag set.
-  // - For any llvm.used value that is exported and promoted, add a private
-  //   alias to the original name in the current module (even if we don't
-  //   export the function using those values in inline asm, another function
-  //   with a reference could be exported).
-  SmallPtrSet<GlobalValue *, 8> Used;
-  collectUsedGlobalVariables(M, Used, /*CompilerUsed*/ false);
-  bool LocalIsUsed =
-      any_of(Used, [](GlobalValue *V) { return V->hasLocalLinkage(); });
-  if (!LocalIsUsed)
-    return true;
-
-  // Walk all the instructions in the module and find if one is inline ASM
-  auto HasInlineAsm = any_of(M, [](const Function &F) {
-    return any_of(instructions(F), [](const Instruction &I) {
-      const CallInst *CallI = dyn_cast<CallInst>(&I);
-      if (!CallI)
-        return false;
-      return CallI->isInlineAsm();
-    });
-  });
-  return !HasInlineAsm;
+  AU.addRequired<ProfileSummaryInfoWrapperPass>();
 }

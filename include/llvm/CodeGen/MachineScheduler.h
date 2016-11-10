@@ -75,12 +75,27 @@
 #ifndef LLVM_CODEGEN_MACHINESCHEDULER_H
 #define LLVM_CODEGEN_MACHINESCHEDULER_H
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachinePassRegistry.h"
 #include "llvm/CodeGen/RegisterPressure.h"
+#include "llvm/CodeGen/ScheduleDAG.h"
 #include "llvm/CodeGen/ScheduleDAGInstrs.h"
 #include "llvm/CodeGen/ScheduleDAGMutation.h"
+#include "llvm/CodeGen/TargetSchedule.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <algorithm>
+#include <cassert>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace llvm {
 
@@ -91,7 +106,6 @@ class LiveIntervals;
 class MachineDominatorTree;
 class MachineLoopInfo;
 class RegisterClassInfo;
-class ScheduleDAGInstrs;
 class SchedDFSResult;
 class ScheduleHazardRecognizer;
 
@@ -126,6 +140,7 @@ public:
     : MachinePassRegistryNode(N, D, (MachinePassCtor)C) {
     Registry.Add(this);
   }
+
   ~MachineSchedRegistry() { Registry.Remove(this); }
 
   // Accessors.
@@ -133,9 +148,11 @@ public:
   MachineSchedRegistry *getNext() const {
     return (MachineSchedRegistry *)MachinePassRegistryNode::getNext();
   }
+
   static MachineSchedRegistry *getList() {
     return (MachineSchedRegistry *)Registry.getList();
   }
+
   static void setListener(MachinePassRegistryListener *L) {
     Registry.setListener(L);
   }
@@ -173,8 +190,9 @@ struct MachineSchedPolicy {
 ///   initPolicy -> shouldTrackPressure -> initialize(DAG) -> registerRoots
 class MachineSchedStrategy {
   virtual void anchor();
+
 public:
-  virtual ~MachineSchedStrategy() {}
+  virtual ~MachineSchedStrategy() = default;
 
   /// Optionally override the per-region scheduling policy.
   virtual void initPolicy(MachineBasicBlock::iterator Begin,
@@ -256,8 +274,7 @@ public:
                 bool RemoveKillFlags)
       : ScheduleDAGInstrs(*C->MF, C->MLI, RemoveKillFlags), AA(C->AA),
         LIS(C->LIS), SchedImpl(std::move(S)), Topo(SUnits, &ExitSU),
-        CurrentTop(), CurrentBottom(), NextClusterPred(nullptr),
-        NextClusterSucc(nullptr) {
+        NextClusterPred(nullptr), NextClusterSucc(nullptr) {
 #ifndef NDEBUG
     NumInstrsScheduled = 0;
 #endif
@@ -589,10 +606,6 @@ private:
   /// instruction.
   bool CheckPending;
 
-  // For heuristics, keep a list of the nodes that immediately depend on the
-  // most recently scheduled node.
-  SmallPtrSet<const SUnit*, 8> NextSUs;
-
   /// Number of cycles it takes to issue the instructions scheduled in this
   /// zone. It is defined as: scheduled-micro-ops / issue-width + stalls.
   /// See getStalls().
@@ -669,10 +682,6 @@ public:
   /// Micro-ops issued in the current cycle
   unsigned getCurrMOps() const { return CurrMOps; }
 
-  /// Return true if the given SU is used by the most recently scheduled
-  /// instruction.
-  bool isNextSU(const SUnit *SU) const { return NextSUs.count(SU); }
-
   // The latency of dependence chains leading into this zone.
   unsigned getDependentLatency() const { return DependentLatency; }
 
@@ -725,10 +734,6 @@ public:
   unsigned getOtherResourceCount(unsigned &OtherCritIdx);
 
   void releaseNode(SUnit *SU, unsigned ReadyCycle);
-
-  void releaseTopNode(SUnit *SU);
-
-  void releaseBottomNode(SUnit *SU);
 
   void bumpCycle(unsigned NextCycle);
 
@@ -859,7 +864,7 @@ protected:
   const TargetRegisterInfo *TRI;
 
   SchedRemainder Rem;
-protected:
+
   GenericSchedulerBase(const MachineSchedContext *C):
     Context(C), SchedModel(nullptr), TRI(nullptr) {}
 
@@ -900,12 +905,18 @@ public:
   void schedNode(SUnit *SU, bool IsTopNode) override;
 
   void releaseTopNode(SUnit *SU) override {
-    Top.releaseTopNode(SU);
+    if (SU->isScheduled)
+      return;
+
+    Top.releaseNode(SU, SU->TopReadyCycle);
     TopCand.SU = nullptr;
   }
 
   void releaseBottomNode(SUnit *SU) override {
-    Bot.releaseBottomNode(SU);
+    if (SU->isScheduled)
+      return;
+
+    Bot.releaseNode(SU, SU->BotReadyCycle);
     BotCand.SU = nullptr;
   }
 
@@ -924,7 +935,6 @@ protected:
   SchedCandidate TopCand;
   /// Candidate last picked from Bot boundary.
   SchedCandidate BotCand;
-
 
   void checkAcyclicLatency();
 
@@ -955,11 +965,12 @@ class PostGenericScheduler : public GenericSchedulerBase {
   ScheduleDAGMI *DAG;
   SchedBoundary Top;
   SmallVector<SUnit*, 8> BotRoots;
+
 public:
   PostGenericScheduler(const MachineSchedContext *C):
     GenericSchedulerBase(C), Top(SchedBoundary::TopQID, "TopQ") {}
 
-  ~PostGenericScheduler() override {}
+  ~PostGenericScheduler() override = default;
 
   void initPolicy(MachineBasicBlock::iterator Begin,
                   MachineBasicBlock::iterator End,
@@ -983,7 +994,9 @@ public:
   void schedNode(SUnit *SU, bool IsTopNode) override;
 
   void releaseTopNode(SUnit *SU) override {
-    Top.releaseTopNode(SU);
+    if (SU->isScheduled)
+      return;
+    Top.releaseNode(SU, SU->TopReadyCycle);
   }
 
   // Only called for roots.
@@ -1013,6 +1026,6 @@ std::unique_ptr<ScheduleDAGMutation>
 createCopyConstrainDAGMutation(const TargetInstrInfo *TII,
                                const TargetRegisterInfo *TRI);
 
-} // namespace llvm
+} // end namespace llvm
 
-#endif
+#endif // LLVM_CODEGEN_MACHINESCHEDULER_H

@@ -1331,6 +1331,10 @@ bool JumpThreadingPass::ProcessBranchOnXOR(BinaryOperator *BO) {
   if (!isa<PHINode>(BB->front()))
     return false;
 
+  // If this BB is a landing pad, we won't be able to split the edge into it.
+  if (BB->isEHPad())
+    return false;
+
   // If we have a xor as the branch input to this block, and we know that the
   // LHS or RHS of the xor in any predecessor is true/false, then we can clone
   // the condition into the predecessor and fix that value to true, saving some
@@ -1620,6 +1624,23 @@ BasicBlock *JumpThreadingPass::SplitBlockPreds(BasicBlock *BB,
   return PredBB;
 }
 
+bool JumpThreadingPass::doesBlockHaveProfileData(BasicBlock *BB) {
+  const TerminatorInst *TI = BB->getTerminator();
+  assert(TI->getNumSuccessors() > 1 && "not a split");
+
+  MDNode *WeightsNode = TI->getMetadata(LLVMContext::MD_prof);
+  if (!WeightsNode)
+    return false;
+
+  MDString *MDName = cast<MDString>(WeightsNode->getOperand(0));
+  if (MDName->getString() != "branch_weights")
+    return false;
+
+  // Ensure there are weights for all of the successors. Note that the first
+  // operand to the metadata node is a name, not a weight.
+  return WeightsNode->getNumOperands() == TI->getNumSuccessors() + 1;
+}
+
 /// Update the block frequency of BB and branch weight and the metadata on the
 /// edge BB->SuccBB. This is done by scaling the weight of BB->SuccBB by 1 -
 /// Freq(PredBB->BB) / Freq(BB->SuccBB).
@@ -1670,7 +1691,41 @@ void JumpThreadingPass::UpdateBlockFreqAndEdgeWeight(BasicBlock *PredBB,
   for (int I = 0, E = BBSuccProbs.size(); I < E; I++)
     BPI->setEdgeProbability(BB, I, BBSuccProbs[I]);
 
-  if (BBSuccProbs.size() >= 2) {
+  // Update the profile metadata as well.
+  //
+  // Don't do this if the profile of the transformed blocks was statically
+  // estimated.  (This could occur despite the function having an entry
+  // frequency in completely cold parts of the CFG.)
+  //
+  // In this case we don't want to suggest to subsequent passes that the
+  // calculated weights are fully consistent.  Consider this graph:
+  //
+  //                 check_1
+  //             50% /  |
+  //             eq_1   | 50%
+  //                 \  |
+  //                 check_2
+  //             50% /  |
+  //             eq_2   | 50%
+  //                 \  |
+  //                 check_3
+  //             50% /  |
+  //             eq_3   | 50%
+  //                 \  |
+  //
+  // Assuming the blocks check_* all compare the same value against 1, 2 and 3,
+  // the overall probabilities are inconsistent; the total probability that the
+  // value is either 1, 2 or 3 is 150%.
+  //
+  // As a consequence if we thread eq_1 -> check_2 to check_3, check_2->check_3
+  // becomes 0%.  This is even worse if the edge whose probability becomes 0% is
+  // the loop exit edge.  Then based solely on static estimation we would assume
+  // the loop was extremely hot.
+  //
+  // FIXME this locally as well so that BPI and BFI are consistent as well.  We
+  // shouldn't make edges extremely likely or unlikely based solely on static
+  // estimation.
+  if (BBSuccProbs.size() >= 2 && doesBlockHaveProfileData(BB)) {
     SmallVector<uint32_t, 4> Weights;
     for (auto Prob : BBSuccProbs)
       Weights.push_back(Prob.getNumerator());
@@ -1908,61 +1963,100 @@ bool JumpThreadingPass::TryToUnfoldSelect(CmpInst *CondCmp, BasicBlock *BB) {
   return false;
 }
 
-/// TryToUnfoldSelectInCurrBB - Look for PHI/Select in the same BB of the form
+/// GetSelectFedByPhi - Look for PHI/Select in the same BB of the form
 /// bb:
 ///   %p = phi [false, %bb1], [true, %bb2], [false, %bb3], [true, %bb4], ...
 ///   %s = select p, trueval, falseval
 ///
-/// And expand the select into a branch structure. This later enables
+/// And return the select. Unfolding it into a branch structure later enables
 /// jump-threading over bb in this pass.
 ///
-/// Using the similar approach of SimplifyCFG::FoldCondBranchOnPHI(), unfold
-/// select if the associated PHI has at least one constant.  If the unfolded
-/// select is not jump-threaded, it will be folded again in the later
-/// optimizations.
+/// Using the similar approach of SimplifyCFG::FoldCondBranchOnPHI(), return
+/// select if the associated PHI has at least one constant.
+SelectInst *JumpThreadingPass::getSelectFedByPhi(PHINode *PN) {
+
+  unsigned NumPHIValues = PN->getNumIncomingValues();
+  if (NumPHIValues == 0 || !PN->hasOneUse())
+    return nullptr;
+
+  SelectInst *SI = dyn_cast<SelectInst>(PN->user_back());
+  BasicBlock *BB = PN->getParent();
+  if (!SI || SI->getParent() != BB)
+    return nullptr;
+
+  Value *Cond = SI->getCondition();
+  if (!Cond || Cond != PN || !Cond->getType()->isIntegerTy(1))
+    return nullptr;
+
+  for (unsigned i = 0; i != NumPHIValues; ++i) {
+    if (PN->getIncomingBlock(i) == BB)
+      return nullptr;
+    if (isa<ConstantInt>(PN->getIncomingValue(i)))
+      return SI;
+  }
+
+  return nullptr;
+}
+
+/// ExpandSelect - Expand a select into an if-then-else construct.
+void JumpThreadingPass::expandSelect(SelectInst *SI) {
+
+  BasicBlock *BB = SI->getParent();
+  TerminatorInst *Term =
+      SplitBlockAndInsertIfThen(SI->getCondition(), SI, false);
+  PHINode *NewPN = PHINode::Create(SI->getType(), 2, "", SI);
+  NewPN->addIncoming(SI->getTrueValue(), Term->getParent());
+  NewPN->addIncoming(SI->getFalseValue(), BB);
+  SI->replaceAllUsesWith(NewPN);
+  SI->eraseFromParent();
+}
+
+/// TryToUnfoldSelectInCurrBB - Unfold selects that could be jump-threaded were
+/// they if-then-elses. If the unfolded selects are not jump-threaded, it will
+/// be folded again in the later optimizations.
 bool JumpThreadingPass::TryToUnfoldSelectInCurrBB(BasicBlock *BB) {
+
   // If threading this would thread across a loop header, don't thread the edge.
   // See the comments above FindLoopHeaders for justifications and caveats.
   if (LoopHeaders.count(BB))
     return false;
 
-  // Look for a Phi/Select pair in the same basic block.  The Phi feeds the
-  // condition of the Select and at least one of the incoming values is a
-  // constant.
-  for (BasicBlock::iterator BI = BB->begin();
-       PHINode *PN = dyn_cast<PHINode>(BI); ++BI) {
-    unsigned NumPHIValues = PN->getNumIncomingValues();
-    if (NumPHIValues == 0 || !PN->hasOneUse())
-      continue;
+  bool Changed = false;
+  for (auto &I : *BB) {
 
-    SelectInst *SI = dyn_cast<SelectInst>(PN->user_back());
-    if (!SI || SI->getParent() != BB)
+    // Look for a Phi/Select pair in the same basic block.  The Phi feeds the
+    // condition of the Select and at least one of the incoming values is a
+    // constant.
+    PHINode *PN;
+    SelectInst *SI;
+    if ((PN = dyn_cast<PHINode>(&I)) && (SI = getSelectFedByPhi(PN))) {
+      expandSelect(SI);
+      Changed = true;
       continue;
-
-    Value *Cond = SI->getCondition();
-    if (!Cond || Cond != PN || !Cond->getType()->isIntegerTy(1))
-      continue;
-
-    bool HasConst = false;
-    for (unsigned i = 0; i != NumPHIValues; ++i) {
-      if (PN->getIncomingBlock(i) == BB)
-        return false;
-      if (isa<ConstantInt>(PN->getIncomingValue(i)))
-        HasConst = true;
     }
 
-    if (HasConst) {
-      // Expand the select.
-      TerminatorInst *Term =
-          SplitBlockAndInsertIfThen(SI->getCondition(), SI, false);
-      PHINode *NewPN = PHINode::Create(SI->getType(), 2, "", SI);
-      NewPN->addIncoming(SI->getTrueValue(), Term->getParent());
-      NewPN->addIncoming(SI->getFalseValue(), BB);
-      SI->replaceAllUsesWith(NewPN);
-      SI->eraseFromParent();
-      return true;
+    if (I.getType()->isIntegerTy(1)) {
+
+      SmallVector<SelectInst *, 4> Selects;
+
+      // Look for scalar booleans used in selects as conditions. If there are
+      // several selects that use the same boolean, they are candidates for jump
+      // threading and therefore we should unfold them.
+      for (Value *U : I.users())
+        if (auto *SI = dyn_cast<SelectInst>(U))
+          Selects.push_back(SI);
+      if (Selects.size() <= 1)
+        continue;
+
+      // Remove duplicates
+      std::sort(Selects.begin(), Selects.end());
+      auto NewEnd = std::unique(Selects.begin(), Selects.end());
+
+      Changed = true;
+      for (auto SI = Selects.begin(); SI != NewEnd; ++SI)
+        expandSelect(*SI);
     }
   }
-  
-  return false;
+
+  return Changed;
 }

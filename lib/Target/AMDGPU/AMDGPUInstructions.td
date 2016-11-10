@@ -49,13 +49,6 @@ def UnsafeFPMath : Predicate<"TM.Options.UnsafeFPMath">;
 def InstFlag : OperandWithDefaultOps <i32, (ops (i32 0))>;
 def ADDRIndirect : ComplexPattern<iPTR, 2, "SelectADDRIndirect", [], []>;
 
-// 32-bit VALU immediate operand that uses the constant bus.
-def u32kimm : Operand<i32> {
-  let OperandNamespace = "AMDGPU";
-  let OperandType = "OPERAND_KIMM32";
-  let PrintMethod = "printU32ImmOperand";
-}
-
 let OperandType = "OPERAND_IMMEDIATE" in {
 
 def u32imm : Operand<i32> {
@@ -369,21 +362,10 @@ multiclass AtomicCmpSwapLocal <SDNode cmp_swap_node> {
 
 defm atomic_cmp_swap : AtomicCmpSwapLocal <atomic_cmp_swap>;
 
-def mskor_flat : PatFrag<(ops node:$val, node:$ptr),
-                            (AMDGPUstore_mskor node:$val, node:$ptr), [{
-  return cast<MemSDNode>(N)->getAddressSpace() == AMDGPUAS::FLAT_ADDRESS;
-}]>;
-
 class global_binary_atomic_op<SDNode atomic_op> : PatFrag<
   (ops node:$ptr, node:$value),
   (atomic_op node:$ptr, node:$value),
   [{return cast<MemSDNode>(N)->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS;}]
->;
-
-class flat_binary_atomic_op<SDNode atomic_op> : PatFrag<
-  (ops node:$ptr, node:$value),
-  (atomic_op node:$ptr, node:$value),
-  [{return cast<MemSDNode>(N)->getAddressSpace() == AMDGPUAS::FLAT_ADDRESS;}]
 >;
 
 def atomic_swap_global : global_binary_atomic_op<atomic_swap>;
@@ -398,24 +380,6 @@ def atomic_umin_global : global_binary_atomic_op<atomic_load_umin>;
 def atomic_xor_global : global_binary_atomic_op<atomic_load_xor>;
 
 def atomic_cmp_swap_global : global_binary_atomic_op<AMDGPUatomic_cmp_swap>;
-def atomic_cmp_swap_global_nortn : PatFrag<
-  (ops node:$ptr, node:$value),
-  (atomic_cmp_swap_global node:$ptr, node:$value),
-  [{ return SDValue(N, 0).use_empty(); }]
->;
-
-def atomic_swap_flat : flat_binary_atomic_op<atomic_swap>;
-def atomic_add_flat : flat_binary_atomic_op<atomic_load_add>;
-def atomic_and_flat : flat_binary_atomic_op<atomic_load_and>;
-def atomic_max_flat : flat_binary_atomic_op<atomic_load_max>;
-def atomic_min_flat : flat_binary_atomic_op<atomic_load_min>;
-def atomic_or_flat : flat_binary_atomic_op<atomic_load_or>;
-def atomic_sub_flat : flat_binary_atomic_op<atomic_load_sub>;
-def atomic_umax_flat : flat_binary_atomic_op<atomic_load_umax>;
-def atomic_umin_flat : flat_binary_atomic_op<atomic_load_umin>;
-def atomic_xor_flat : flat_binary_atomic_op<atomic_load_xor>;
-
-def atomic_cmp_swap_flat : flat_binary_atomic_op<AMDGPUatomic_cmp_swap>;
 
 //===----------------------------------------------------------------------===//
 // Misc Pattern Fragments
@@ -565,16 +529,25 @@ multiclass BFIPatterns <Instruction BFI_INT,
 
   def : Pat <
     (fcopysign f32:$src0, f32:$src1),
-    (BFI_INT (LoadImm32 0x7fffffff), $src0, $src1)
+    (BFI_INT (LoadImm32 (i32 0x7fffffff)), $src0, $src1)
   >;
 
   def : Pat <
     (f64 (fcopysign f64:$src0, f64:$src1)),
     (REG_SEQUENCE RC64,
       (i32 (EXTRACT_SUBREG $src0, sub0)), sub0,
-      (BFI_INT (LoadImm32 0x7fffffff),
+      (BFI_INT (LoadImm32 (i32 0x7fffffff)),
                (i32 (EXTRACT_SUBREG $src0, sub1)),
                (i32 (EXTRACT_SUBREG $src1, sub1))), sub1)
+  >;
+
+  def : Pat <
+    (f64 (fcopysign f64:$src0, f32:$src1)),
+    (REG_SEQUENCE RC64,
+      (i32 (EXTRACT_SUBREG $src0, sub0)), sub0,
+      (BFI_INT (LoadImm32 (i32 0x7fffffff)),
+               (i32 (EXTRACT_SUBREG $src0, sub1)),
+               $src1), sub1)
   >;
 }
 
@@ -628,9 +601,6 @@ def sub_oneuse : HasOneUseBinOp<sub>;
 } // Properties = [SDNPCommutative, SDNPAssociative]
 
 def select_oneuse : HasOneUseTernaryOp<select>;
-
-// 24-bit arithmetic patterns
-def umul24 : PatFrag <(ops node:$x, node:$y), (mul node:$x, node:$y)>;
 
 // Special conversion patterns
 

@@ -21,6 +21,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
@@ -42,6 +43,7 @@
 #include "llvm/Support/SHA1.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/ThreadPool.h"
+#include "llvm/Support/Threading.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/FunctionImport.h"
@@ -63,8 +65,8 @@ extern cl::opt<bool> LTODiscardValueNames;
 
 namespace {
 
-static cl::opt<int> ThreadCount("threads",
-                                cl::init(std::thread::hardware_concurrency()));
+static cl::opt<int>
+    ThreadCount("threads", cl::init(llvm::heavyweight_hardware_concurrency()));
 
 static void diagnosticHandler(const DiagnosticInfo &DI) {
   DiagnosticPrinterRawOStream DP(errs());
@@ -150,7 +152,8 @@ crossImportIntoModule(Module &TheModule, const ModuleSummaryIndex &Index,
                       const FunctionImporter::ImportMapTy &ImportList) {
   ModuleLoader Loader(TheModule.getContext(), ModuleMap);
   FunctionImporter Importer(Index, Loader);
-  Importer.importFunctions(TheModule, ImportList);
+  if (!Importer.importFunctions(TheModule, ImportList))
+    report_fatal_error("importFunctions failed");
 }
 
 static void optimizeModule(Module &TheModule, TargetMachine &TM) {
@@ -233,10 +236,21 @@ public:
     if (CachePath.empty())
       return;
 
+    if (!Index.modulePaths().count(ModuleID))
+      // The module does not have an entry, it can't have a hash at all
+      return;
+
     // Compute the unique hash for this entry
     // This is based on the current compiler version, the module itself, the
     // export list, the hash for every single module in the import list, the
     // list of ResolvedODR for the module, and the list of preserved symbols.
+
+    // Include the hash for the current module
+    auto ModHash = Index.getModuleHash(ModuleID);
+
+    if (all_of(ModHash, [](uint32_t V) { return V == 0; }))
+      // No hash entry, no caching!
+      return;
 
     SHA1 Hasher;
 
@@ -246,8 +260,6 @@ public:
     Hasher.update(LLVM_REVISION);
 #endif
 
-    // Include the hash for the current module
-    auto ModHash = Index.getModuleHash(ModuleID);
     Hasher.update(ArrayRef<uint8_t>((uint8_t *)&ModHash[0], sizeof(ModHash)));
     for (auto F : ExportList)
       // The export list can impact the internalization, be conservative here
@@ -377,7 +389,8 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
     SmallVector<char, 128> OutputBuffer;
     {
       raw_svector_ostream OS(OutputBuffer);
-      auto Index = buildModuleSummaryIndex(TheModule);
+      ProfileSummaryInfo PSI(TheModule);
+      auto Index = buildModuleSummaryIndex(TheModule, nullptr, nullptr);
       WriteBitcodeToFile(&TheModule, OS, true, &Index);
     }
     return make_unique<ObjectMemoryBuffer>(std::move(OutputBuffer));
@@ -824,8 +837,8 @@ void ThinLTOCodeGenerator::run() {
   }
 
   CachePruning(CacheOptions.Path)
-      .setPruningInterval(CacheOptions.PruningInterval)
-      .setEntryExpiration(CacheOptions.Expiration)
+      .setPruningInterval(std::chrono::seconds(CacheOptions.PruningInterval))
+      .setEntryExpiration(std::chrono::seconds(CacheOptions.Expiration))
       .setMaxSize(CacheOptions.MaxPercentageOfAvailableSpace)
       .prune();
 

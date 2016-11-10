@@ -1570,11 +1570,13 @@ bool RegisterCoalescer::joinReservedPhysReg(CoalescerPair &CP) {
 
   // Deny any overlapping intervals.  This depends on all the reserved
   // register live ranges to look like dead defs.
-  for (MCRegUnitIterator UI(DstReg, TRI); UI.isValid(); ++UI)
-    if (RHS.overlaps(LIS->getRegUnit(*UI))) {
-      DEBUG(dbgs() << "\t\tInterference: " << PrintRegUnit(*UI, TRI) << '\n');
-      return false;
-    }
+  if (!MRI->isConstantPhysReg(DstReg)) {
+    for (MCRegUnitIterator UI(DstReg, TRI); UI.isValid(); ++UI)
+      if (RHS.overlaps(LIS->getRegUnit(*UI))) {
+        DEBUG(dbgs() << "\t\tInterference: " << PrintRegUnit(*UI, TRI) << '\n');
+        return false;
+      }
+  }
 
   // Skip any value computations, we are not adding new values to the
   // reserved register.  Also skip merging the live ranges, the reserved
@@ -1596,23 +1598,25 @@ bool RegisterCoalescer::joinReservedPhysReg(CoalescerPair &CP) {
     const SlotIndex CopyRegIdx = LIS->getInstructionIndex(*CopyMI).getRegSlot();
     const SlotIndex DestRegIdx = LIS->getInstructionIndex(*DestMI).getRegSlot();
 
-    // We checked above that there are no interfering defs of the physical
-    // register. However, for this case, where we intent to move up the def of
-    // the physical register, we also need to check for interfering uses.
-    SlotIndexes *Indexes = LIS->getSlotIndexes();
-    for (SlotIndex SI = Indexes->getNextNonNullIndex(DestRegIdx);
-         SI != CopyRegIdx; SI = Indexes->getNextNonNullIndex(SI)) {
-      MachineInstr *MI = LIS->getInstructionFromIndex(SI);
-      if (MI->readsRegister(DstReg, TRI)) {
-        DEBUG(dbgs() << "\t\tInterference (read): " << *MI);
-        return false;
-      }
-
-      // We must also check for clobbers caused by regmasks.
-      for (const auto &MO : MI->operands()) {
-        if (MO.isRegMask() && MO.clobbersPhysReg(DstReg)) {
-          DEBUG(dbgs() << "\t\tInterference (regmask clobber): " << *MI);
+    if (!MRI->isConstantPhysReg(DstReg)) {
+      // We checked above that there are no interfering defs of the physical
+      // register. However, for this case, where we intent to move up the def of
+      // the physical register, we also need to check for interfering uses.
+      SlotIndexes *Indexes = LIS->getSlotIndexes();
+      for (SlotIndex SI = Indexes->getNextNonNullIndex(DestRegIdx);
+           SI != CopyRegIdx; SI = Indexes->getNextNonNullIndex(SI)) {
+        MachineInstr *MI = LIS->getInstructionFromIndex(SI);
+        if (MI->readsRegister(DstReg, TRI)) {
+          DEBUG(dbgs() << "\t\tInterference (read): " << *MI);
           return false;
+        }
+
+        // We must also check for clobbers caused by regmasks.
+        for (const auto &MO : MI->operands()) {
+          if (MO.isRegMask() && MO.clobbersPhysReg(DstReg)) {
+            DEBUG(dbgs() << "\t\tInterference (regmask clobber): " << *MI);
+            return false;
+          }
         }
       }
     }
@@ -2372,7 +2376,7 @@ bool JoinVals::resolveConflicts(JoinVals &Other) {
       Indexes->getInstructionFromIndex(TaintExtent.front().first);
     assert(LastMI && "Range must end at a proper instruction");
     unsigned TaintNum = 0;
-    for(;;) {
+    for (;;) {
       assert(MI != MBB->end() && "Bad LastMI");
       if (usesLanes(*MI, Other.Reg, Other.SubIdx, TaintedLanes)) {
         DEBUG(dbgs() << "\t\ttainted lanes used by: " << *MI);
@@ -2690,8 +2694,15 @@ void RegisterCoalescer::joinSubRegRanges(LiveRange &LRange, LiveRange &RRange,
 
   // Recompute the parts of the live range we had to remove because of
   // CR_Replace conflicts.
-  DEBUG(dbgs() << "\t\trestoring liveness to " << EndPoints.size()
-               << " points: " << LRange << '\n');
+  DEBUG({
+    dbgs() << "\t\trestoring liveness to " << EndPoints.size() << " points: ";
+    for (unsigned i = 0, n = EndPoints.size(); i != n; ++i) {
+      dbgs() << EndPoints[i];
+      if (i != n-1)
+        dbgs() << ',';
+    }
+    dbgs() << ":  " << LRange << '\n';
+  });
   LIS->extendToIndices(LRange, EndPoints);
 }
 
@@ -2832,8 +2843,15 @@ bool RegisterCoalescer::joinVirtRegs(CoalescerPair &CP) {
   if (!EndPoints.empty()) {
     // Recompute the parts of the live range we had to remove because of
     // CR_Replace conflicts.
-    DEBUG(dbgs() << "\t\trestoring liveness to " << EndPoints.size()
-                 << " points: " << LHS << '\n');
+    DEBUG({
+      dbgs() << "\t\trestoring liveness to " << EndPoints.size() << " points: ";
+      for (unsigned i = 0, n = EndPoints.size(); i != n; ++i) {
+        dbgs() << EndPoints[i];
+        if (i != n-1)
+          dbgs() << ',';
+      }
+      dbgs() << ":  " << LHS << '\n';
+    });
     LIS->extendToIndices((LiveRange&)LHS, EndPoints);
   }
 

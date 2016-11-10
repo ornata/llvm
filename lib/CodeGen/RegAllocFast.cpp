@@ -149,9 +149,7 @@ namespace {
       spillImpossible = ~0u
     };
   public:
-    const char *getPassName() const override {
-      return "Fast Register Allocator";
-    }
+    StringRef getPassName() const override { return "Fast Register Allocator"; }
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesCFG();
@@ -165,7 +163,7 @@ namespace {
 
     MachineFunctionProperties getSetProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
 
   private:

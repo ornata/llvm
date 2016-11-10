@@ -58,10 +58,6 @@ static cl::opt<bool> EnablePrecomputePhysRegs(
 static bool EnablePrecomputePhysRegs = false;
 #endif // NDEBUG
 
-static cl::opt<bool> EnableSubRegLiveness(
-  "enable-subreg-liveness", cl::Hidden, cl::init(true),
-  cl::desc("Enable subregister liveness tracking."));
-
 namespace llvm {
 cl::opt<bool> UseSegmentSetForPhysRegs(
     "use-segment-set-for-physregs", cl::Hidden, cl::init(true),
@@ -118,9 +114,6 @@ bool LiveIntervals::runOnMachineFunction(MachineFunction &fn) {
   AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
   Indexes = &getAnalysis<SlotIndexes>();
   DomTree = &getAnalysis<MachineDominatorTree>();
-
-  if (EnableSubRegLiveness && MF->getSubtarget().enableSubRegLiveness())
-    MRI->enableSubRegLiveness(true);
 
   if (!LRCalc)
     LRCalc = new LiveRangeCalc();
@@ -513,20 +506,19 @@ void LiveIntervals::shrinkToUses(LiveInterval::SubRange &SR, unsigned Reg) {
 
   // Visit all instructions reading Reg.
   SlotIndex LastIdx;
-  for (MachineOperand &MO : MRI->reg_operands(Reg)) {
-    MachineInstr *UseMI = MO.getParent();
-    if (UseMI->isDebugValue() || !MO.readsReg())
+  for (MachineOperand &MO : MRI->use_nodbg_operands(Reg)) {
+    // Skip "undef" uses.
+    if (!MO.readsReg())
       continue;
     // Maybe the operand is for a subregister we don't care about.
     unsigned SubReg = MO.getSubReg();
     if (SubReg != 0) {
       LaneBitmask LaneMask = TRI->getSubRegIndexLaneMask(SubReg);
-      if (MO.isDef())
-        LaneMask = ~LaneMask & MRI->getMaxLaneMaskForVReg(Reg);
       if ((LaneMask & SR.LaneMask) == 0)
         continue;
     }
     // We only need to visit each instruction once.
+    MachineInstr *UseMI = MO.getParent();
     SlotIndex Idx = getInstructionIndex(*UseMI).getRegSlot();
     if (Idx == LastIdx)
       continue;
@@ -575,11 +567,12 @@ void LiveIntervals::shrinkToUses(LiveInterval::SubRange &SR, unsigned Reg) {
 }
 
 void LiveIntervals::extendToIndices(LiveRange &LR,
-                                    ArrayRef<SlotIndex> Indices) {
+                                    ArrayRef<SlotIndex> Indices,
+                                    ArrayRef<SlotIndex> Undefs) {
   assert(LRCalc && "LRCalc not initialized.");
   LRCalc->reset(MF, getSlotIndexes(), DomTree, &getVNInfoAllocator());
   for (unsigned i = 0, e = Indices.size(); i != e; ++i)
-    LRCalc->extend(LR, Indices[i], /*PhysReg=*/0, /*Undefs=*/{});
+    LRCalc->extend(LR, Indices[i], /*PhysReg=*/0, Undefs);
 }
 
 void LiveIntervals::pruneValue(LiveRange &LR, SlotIndex Kill,
@@ -606,7 +599,7 @@ void LiveIntervals::pruneValue(LiveRange &LR, SlotIndex Kill,
   // Find all blocks that are reachable from KillMBB without leaving VNI's live
   // range. It is possible that KillMBB itself is reachable, so start a DFS
   // from each successor.
-  typedef SmallPtrSet<MachineBasicBlock*, 9> VisitedTy;
+  typedef df_iterator_default_set<MachineBasicBlock*,9> VisitedTy;
   VisitedTy Visited;
   for (MachineBasicBlock::succ_iterator
        SuccI = KillMBB->succ_begin(), SuccE = KillMBB->succ_end();

@@ -77,7 +77,7 @@ public:
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "Hexagon Copy-To-Combine Pass";
   }
 
@@ -85,7 +85,7 @@ public:
 
   MachineFunctionProperties getRequiredProperties() const override {
     return MachineFunctionProperties().set(
-        MachineFunctionProperties::Property::AllVRegsAllocated);
+        MachineFunctionProperties::Property::NoVRegs);
   }
 
 private:
@@ -521,10 +521,8 @@ MachineInstr *HexagonCopyToCombine::findPairable(MachineInstr &I1,
                                                  bool &DoInsertAtI1,
                                                  bool AllowC64) {
   MachineBasicBlock::iterator I2 = std::next(MachineBasicBlock::iterator(I1));
-
-  if (I2 != I1.getParent()->end())
-    while (I2->isDebugValue())
-      ++I2;
+  while (I2 != I1.getParent()->end() && I2->isDebugValue())
+    ++I2;
 
   unsigned I1DestReg = I1.getOperand(0).getReg();
 
@@ -582,22 +580,25 @@ void HexagonCopyToCombine::combine(MachineInstr &I1, MachineInstr &I2,
   unsigned I2DestReg = I2.getOperand(0).getReg();
   bool IsI1Loreg = (I2DestReg - I1DestReg) == 1;
   unsigned LoRegDef = IsI1Loreg ? I1DestReg : I2DestReg;
+  unsigned SubLo;
 
   const TargetRegisterClass *SuperRC = nullptr;
   if (Hexagon::IntRegsRegClass.contains(LoRegDef)) {
     SuperRC = &Hexagon::DoubleRegsRegClass;
+    SubLo = Hexagon::isub_lo;
   } else if (Hexagon::VectorRegsRegClass.contains(LoRegDef)) {
     assert(ST->useHVXOps());
     if (ST->useHVXSglOps())
       SuperRC = &Hexagon::VecDblRegsRegClass;
     else
       SuperRC = &Hexagon::VecDblRegs128BRegClass;
-  }
-  // Get the double word register.
-  unsigned DoubleRegDest =
-    TRI->getMatchingSuperReg(LoRegDef, Hexagon::subreg_loreg, SuperRC);
-  assert(DoubleRegDest != 0 && "Expect a valid register");
+    SubLo = Hexagon::vsub_lo;
+  } else
+    llvm_unreachable("Unexpected register class");
 
+  // Get the double word register.
+  unsigned DoubleRegDest = TRI->getMatchingSuperReg(LoRegDef, SubLo, SuperRC);
+  assert(DoubleRegDest != 0 && "Expect a valid register");
 
   // Setup source operands.
   MachineOperand &LoOperand = IsI1Loreg ? I1.getOperand(1) : I2.getOperand(1);

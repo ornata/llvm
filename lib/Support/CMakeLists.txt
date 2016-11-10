@@ -37,14 +37,14 @@ add_llvm_library(LLVMSupport
   BranchProbability.cpp
   CachePruning.cpp
   circular_raw_ostream.cpp
+  Chrono.cpp
   COM.cpp
   CommandLine.cpp
   Compression.cpp
-  ConvertUTF.c
+  ConvertUTF.cpp
   ConvertUTFWrapper.cpp
   CrashRecoveryContext.cpp
   DataExtractor.cpp
-  DataStream.cpp
   Debug.cpp
   DeltaAlgorithm.cpp
   DAGDeltaAlgorithm.cpp
@@ -68,8 +68,8 @@ add_llvm_library(LLVMSupport
   ManagedStatic.cpp
   MathExtras.cpp
   MemoryBuffer.cpp
-  MemoryObject.cpp
   MD5.cpp
+  NativeFormatting.cpp
   Options.cpp
   PluginLoader.cpp
   PrettyStackTrace.cpp
@@ -83,7 +83,6 @@ add_llvm_library(LLVMSupport
   SourceMgr.cpp
   SpecialCaseList.cpp
   Statistic.cpp
-  StreamingMemoryObject.cpp
   StringExtras.cpp
   StringMap.cpp
   StringPool.cpp
@@ -106,6 +105,7 @@ add_llvm_library(LLVMSupport
   regexec.c
   regfree.c
   regstrlcpy.c
+  xxhash.cpp
 
 # System
   Atomic.cpp

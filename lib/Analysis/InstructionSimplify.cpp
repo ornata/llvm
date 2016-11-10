@@ -680,9 +680,26 @@ static Value *SimplifySubInst(Value *Op0, Value *Op1, bool isNSW, bool isNUW,
   if (Op0 == Op1)
     return Constant::getNullValue(Op0->getType());
 
-  // 0 - X -> 0 if the sub is NUW.
-  if (isNUW && match(Op0, m_Zero()))
-    return Op0;
+  // Is this a negation?
+  if (match(Op0, m_Zero())) {
+    // 0 - X -> 0 if the sub is NUW.
+    if (isNUW)
+      return Op0;
+
+    unsigned BitWidth = Op1->getType()->getScalarSizeInBits();
+    APInt KnownZero(BitWidth, 0);
+    APInt KnownOne(BitWidth, 0);
+    computeKnownBits(Op1, KnownZero, KnownOne, Q.DL, 0, Q.AC, Q.CxtI, Q.DT);
+    if (KnownZero == ~APInt::getSignBit(BitWidth)) {
+      // Op1 is either 0 or the minimum signed value. If the sub is NSW, then
+      // Op1 must be 0 because negating the minimum signed value is undefined.
+      if (isNSW)
+        return Op0;
+
+      // 0 - X -> X if X is 0 or the minimum signed value.
+      return Op1;
+    }
+  }
 
   // (X + Y) - Z -> X + (Y - Z) or Y + (X - Z) if everything simplifies.
   // For example, (X + Y) - Y -> X; (Y + X) - Y -> X
@@ -1500,16 +1517,14 @@ static Value *simplifyUnsignedRangeCheck(ICmpInst *ZeroICmp,
 }
 
 static Value *SimplifyAndOfICmps(ICmpInst *Op0, ICmpInst *Op1) {
-  Type *ITy = Op0->getType();
-  ICmpInst::Predicate Pred0, Pred1;
-  ConstantInt *CI1, *CI2;
-  Value *V;
-
   if (Value *X = simplifyUnsignedRangeCheck(Op0, Op1, /*IsAnd=*/true))
     return X;
 
   // Look for this pattern: (icmp V, C0) & (icmp V, C1)).
+  Type *ITy = Op0->getType();
+  ICmpInst::Predicate Pred0, Pred1;
   const APInt *C0, *C1;
+  Value *V;
   if (match(Op0, m_ICmp(Pred0, m_Value(V), m_APInt(C0))) &&
       match(Op1, m_ICmp(Pred1, m_Specific(V), m_APInt(C1)))) {
     // Make a constant range that's the intersection of the two icmp ranges.
@@ -1520,21 +1535,22 @@ static Value *SimplifyAndOfICmps(ICmpInst *Op0, ICmpInst *Op1) {
       return getFalse(ITy);
   }
 
-  if (!match(Op0, m_ICmp(Pred0, m_Add(m_Value(V), m_ConstantInt(CI1)),
-                         m_ConstantInt(CI2))))
+  // (icmp (add V, C0), C1) & (icmp V, C0)
+  if (!match(Op0, m_ICmp(Pred0, m_Add(m_Value(V), m_APInt(C0)), m_APInt(C1))))
     return nullptr;
 
-  if (!match(Op1, m_ICmp(Pred1, m_Specific(V), m_Specific(CI1))))
+  if (!match(Op1, m_ICmp(Pred1, m_Specific(V), m_Value())))
     return nullptr;
 
   auto *AddInst = cast<BinaryOperator>(Op0->getOperand(0));
+  if (AddInst->getOperand(1) != Op1->getOperand(1))
+    return nullptr;
+
   bool isNSW = AddInst->hasNoSignedWrap();
   bool isNUW = AddInst->hasNoUnsignedWrap();
 
-  const APInt &CI1V = CI1->getValue();
-  const APInt &CI2V = CI2->getValue();
-  const APInt Delta = CI2V - CI1V;
-  if (CI1V.isStrictlyPositive()) {
+  const APInt Delta = *C1 - *C0;
+  if (C0->isStrictlyPositive()) {
     if (Delta == 2) {
       if (Pred0 == ICmpInst::ICMP_ULT && Pred1 == ICmpInst::ICMP_SGT)
         return getFalse(ITy);
@@ -1548,7 +1564,7 @@ static Value *SimplifyAndOfICmps(ICmpInst *Op0, ICmpInst *Op1) {
         return getFalse(ITy);
     }
   }
-  if (CI1V.getBoolValue() && isNUW) {
+  if (C0->getBoolValue() && isNUW) {
     if (Delta == 2)
       if (Pred0 == ICmpInst::ICMP_ULT && Pred1 == ICmpInst::ICMP_UGT)
         return getFalse(ITy);
@@ -1685,30 +1701,29 @@ Value *llvm::SimplifyAndInst(Value *Op0, Value *Op1, const DataLayout &DL,
 /// Simplify (or (icmp ...) (icmp ...)) to true when we can tell that the union
 /// contains all possible values.
 static Value *SimplifyOrOfICmps(ICmpInst *Op0, ICmpInst *Op1) {
-  ICmpInst::Predicate Pred0, Pred1;
-  ConstantInt *CI1, *CI2;
-  Value *V;
-
   if (Value *X = simplifyUnsignedRangeCheck(Op0, Op1, /*IsAnd=*/false))
     return X;
 
-  if (!match(Op0, m_ICmp(Pred0, m_Add(m_Value(V), m_ConstantInt(CI1)),
-                         m_ConstantInt(CI2))))
-   return nullptr;
+  // (icmp (add V, C0), C1) | (icmp V, C0)
+  ICmpInst::Predicate Pred0, Pred1;
+  const APInt *C0, *C1;
+  Value *V;
+  if (!match(Op0, m_ICmp(Pred0, m_Add(m_Value(V), m_APInt(C0)), m_APInt(C1))))
+    return nullptr;
 
-  if (!match(Op1, m_ICmp(Pred1, m_Specific(V), m_Specific(CI1))))
+  if (!match(Op1, m_ICmp(Pred1, m_Specific(V), m_Value())))
+    return nullptr;
+
+  auto *AddInst = cast<BinaryOperator>(Op0->getOperand(0));
+  if (AddInst->getOperand(1) != Op1->getOperand(1))
     return nullptr;
 
   Type *ITy = Op0->getType();
-
-  auto *AddInst = cast<BinaryOperator>(Op0->getOperand(0));
   bool isNSW = AddInst->hasNoSignedWrap();
   bool isNUW = AddInst->hasNoUnsignedWrap();
 
-  const APInt &CI1V = CI1->getValue();
-  const APInt &CI2V = CI2->getValue();
-  const APInt Delta = CI2V - CI1V;
-  if (CI1V.isStrictlyPositive()) {
+  const APInt Delta = *C1 - *C0;
+  if (C0->isStrictlyPositive()) {
     if (Delta == 2) {
       if (Pred0 == ICmpInst::ICMP_UGE && Pred1 == ICmpInst::ICMP_SLE)
         return getTrue(ITy);
@@ -1722,7 +1737,7 @@ static Value *SimplifyOrOfICmps(ICmpInst *Op0, ICmpInst *Op1) {
         return getTrue(ITy);
     }
   }
-  if (CI1V.getBoolValue() && isNUW) {
+  if (C0->getBoolValue() && isNUW) {
     if (Delta == 2)
       if (Pred0 == ICmpInst::ICMP_UGE && Pred1 == ICmpInst::ICMP_ULE)
         return getTrue(ITy);
@@ -2159,7 +2174,7 @@ static Value *simplifyICmpWithConstant(CmpInst::Predicate Pred, Value *LHS,
     return nullptr;
 
   // Rule out tautological comparisons (eg., ult 0 or uge 0).
-  ConstantRange RHS_CR = ICmpInst::makeConstantRange(Pred, *C);
+  ConstantRange RHS_CR = ConstantRange::makeExactICmpRegion(Pred, *C);
   if (RHS_CR.isEmptySet())
     return ConstantInt::getFalse(GetCompareTy(RHS));
   if (RHS_CR.isFullSet())
@@ -2842,6 +2857,17 @@ static Value *SimplifyICmpInst(unsigned Predicate, Value *LHS, Value *RHS,
       return getTrue(ITy);
   }
 
+  // x >=u x >> y
+  // x >=u x udiv y.
+  if (RBO && (match(RBO, m_LShr(m_Specific(LHS), m_Value())) ||
+              match(RBO, m_UDiv(m_Specific(LHS), m_Value())))) {
+    // icmp pred X, (X op Y)
+    if (Pred == ICmpInst::ICMP_ULT)
+      return getFalse(ITy);
+    if (Pred == ICmpInst::ICMP_UGE)
+      return getTrue(ITy);
+  }
+
   // handle:
   //   CI2 << X == CI
   //   CI2 << X != CI
@@ -3194,17 +3220,18 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
   }
 
   // Fold trivial predicates.
+  Type *RetTy = GetCompareTy(LHS);
   if (Pred == FCmpInst::FCMP_FALSE)
-    return ConstantInt::get(GetCompareTy(LHS), 0);
+    return getFalse(RetTy);
   if (Pred == FCmpInst::FCMP_TRUE)
-    return ConstantInt::get(GetCompareTy(LHS), 1);
+    return getTrue(RetTy);
 
   // UNO/ORD predicates can be trivially folded if NaNs are ignored.
   if (FMF.noNaNs()) {
     if (Pred == FCmpInst::FCMP_UNO)
-      return ConstantInt::get(GetCompareTy(LHS), 0);
+      return getFalse(RetTy);
     if (Pred == FCmpInst::FCMP_ORD)
-      return ConstantInt::get(GetCompareTy(LHS), 1);
+      return getTrue(RetTy);
   }
 
   // fcmp pred x, undef  and  fcmp pred undef, x
@@ -3212,15 +3239,15 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
   if (isa<UndefValue>(LHS) || isa<UndefValue>(RHS)) {
     // Choosing NaN for the undef will always make unordered comparison succeed
     // and ordered comparison fail.
-    return ConstantInt::get(GetCompareTy(LHS), CmpInst::isUnordered(Pred));
+    return ConstantInt::get(RetTy, CmpInst::isUnordered(Pred));
   }
 
   // fcmp x,x -> true/false.  Not all compares are foldable.
   if (LHS == RHS) {
     if (CmpInst::isTrueWhenEqual(Pred))
-      return ConstantInt::get(GetCompareTy(LHS), 1);
+      return getTrue(RetTy);
     if (CmpInst::isFalseWhenEqual(Pred))
-      return ConstantInt::get(GetCompareTy(LHS), 0);
+      return getFalse(RetTy);
   }
 
   // Handle fcmp with constant RHS
@@ -3235,11 +3262,11 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
     // If the constant is a nan, see if we can fold the comparison based on it.
     if (CFP->getValueAPF().isNaN()) {
       if (FCmpInst::isOrdered(Pred)) // True "if ordered and foo"
-        return ConstantInt::getFalse(CFP->getContext());
+        return getFalse(RetTy);
       assert(FCmpInst::isUnordered(Pred) &&
              "Comparison must be either ordered or unordered!");
       // True if unordered.
-      return ConstantInt::get(GetCompareTy(LHS), 1);
+      return getTrue(RetTy);
     }
     // Check whether the constant is an infinity.
     if (CFP->getValueAPF().isInfinity()) {
@@ -3247,10 +3274,10 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
         switch (Pred) {
         case FCmpInst::FCMP_OLT:
           // No value is ordered and less than negative infinity.
-          return ConstantInt::get(GetCompareTy(LHS), 0);
+          return getFalse(RetTy);
         case FCmpInst::FCMP_UGE:
           // All values are unordered with or at least negative infinity.
-          return ConstantInt::get(GetCompareTy(LHS), 1);
+          return getTrue(RetTy);
         default:
           break;
         }
@@ -3258,10 +3285,10 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
         switch (Pred) {
         case FCmpInst::FCMP_OGT:
           // No value is ordered and greater than infinity.
-          return ConstantInt::get(GetCompareTy(LHS), 0);
+          return getFalse(RetTy);
         case FCmpInst::FCMP_ULE:
           // All values are unordered with and at most infinity.
-          return ConstantInt::get(GetCompareTy(LHS), 1);
+          return getTrue(RetTy);
         default:
           break;
         }
@@ -3271,12 +3298,12 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
       switch (Pred) {
       case FCmpInst::FCMP_UGE:
         if (CannotBeOrderedLessThanZero(LHS, Q.TLI))
-          return ConstantInt::get(GetCompareTy(LHS), 1);
+          return getTrue(RetTy);
         break;
       case FCmpInst::FCMP_OLT:
         // X < 0
         if (CannotBeOrderedLessThanZero(LHS, Q.TLI))
-          return ConstantInt::get(GetCompareTy(LHS), 0);
+          return getFalse(RetTy);
         break;
       default:
         break;

@@ -627,26 +627,25 @@ namespace X86II {
   ///                  in this instruction.
   /// If this is a two-address instruction,skip one of the register operands.
   /// FIXME: This should be handled during MCInst lowering.
-  inline int getOperandBias(const MCInstrDesc& Desc)
+  inline unsigned getOperandBias(const MCInstrDesc& Desc)
   {
     unsigned NumOps = Desc.getNumOperands();
-    unsigned CurOp = 0;
     if (NumOps > 1 && Desc.getOperandConstraint(1, MCOI::TIED_TO) == 0)
-      ++CurOp;
-    else if (NumOps > 3 && Desc.getOperandConstraint(2, MCOI::TIED_TO) == 0 &&
-             Desc.getOperandConstraint(3, MCOI::TIED_TO) == 1)
+      return 1;
+    if (NumOps > 3 && Desc.getOperandConstraint(2, MCOI::TIED_TO) == 0 &&
+        Desc.getOperandConstraint(3, MCOI::TIED_TO) == 1)
       // Special case for AVX-512 GATHER with 2 TIED_TO operands
       // Skip the first 2 operands: dst, mask_wb
-      CurOp += 2;
-    else if (NumOps > 3 && Desc.getOperandConstraint(2, MCOI::TIED_TO) == 0 &&
-             Desc.getOperandConstraint(NumOps - 1, MCOI::TIED_TO) == 1)
+      return 2;
+    if (NumOps > 3 && Desc.getOperandConstraint(2, MCOI::TIED_TO) == 0 &&
+        Desc.getOperandConstraint(NumOps - 1, MCOI::TIED_TO) == 1)
       // Special case for GATHER with 2 TIED_TO operands
       // Skip the first 2 operands: dst, mask_wb
-      CurOp += 2;
-    else if (NumOps > 2 && Desc.getOperandConstraint(NumOps - 2, MCOI::TIED_TO) == 0)
+      return 2;
+    if (NumOps > 2 && Desc.getOperandConstraint(NumOps - 2, MCOI::TIED_TO) == 0)
       // SCATTER
-      ++CurOp;
-    return CurOp;
+      return 1;
+    return 0;
   }
 
   /// getMemoryOperandNo - The function returns the MCInst operand # for the
@@ -731,12 +730,9 @@ namespace X86II {
   /// isX86_64ExtendedReg - Is the MachineOperand a x86-64 extended (r8 or
   /// higher) register?  e.g. r8, xmm8, xmm13, etc.
   inline bool isX86_64ExtendedReg(unsigned RegNo) {
-    if ((RegNo >= X86::XMM8 && RegNo <= X86::XMM15) ||
-        (RegNo >= X86::XMM24 && RegNo <= X86::XMM31) ||
-        (RegNo >= X86::YMM8 && RegNo <= X86::YMM15) ||
-        (RegNo >= X86::YMM24 && RegNo <= X86::YMM31) ||
-        (RegNo >= X86::ZMM8 && RegNo <= X86::ZMM15) ||
-        (RegNo >= X86::ZMM24 && RegNo <= X86::ZMM31))
+    if ((RegNo >= X86::XMM8 && RegNo <= X86::XMM31) ||
+        (RegNo >= X86::YMM8 && RegNo <= X86::YMM31) ||
+        (RegNo >= X86::ZMM8 && RegNo <= X86::ZMM31))
       return true;
 
     switch (RegNo) {
@@ -751,6 +747,8 @@ namespace X86II {
     case X86::R12B:  case X86::R13B:  case X86::R14B:  case X86::R15B:
     case X86::CR8:   case X86::CR9:   case X86::CR10:  case X86::CR11:
     case X86::CR12:  case X86::CR13:  case X86::CR14:  case X86::CR15:
+    case X86::DR8:   case X86::DR9:   case X86::DR10:  case X86::DR11:
+    case X86::DR12:  case X86::DR13:  case X86::DR14:  case X86::DR15:
       return true;
     }
     return false;
@@ -768,6 +766,16 @@ namespace X86II {
   inline bool isX86_64NonExtLowByteReg(unsigned reg) {
     return (reg == X86::SPL || reg == X86::BPL ||
             reg == X86::SIL || reg == X86::DIL);
+  }
+
+  /// isKMasked - Is this a masked instruction.
+  inline bool isKMasked(uint64_t TSFlags) {
+    return (TSFlags & X86II::EVEX_K) != 0;
+  }
+
+  /// isKMergedMasked - Is this a merge masked instruction.
+  inline bool isKMergeMasked(uint64_t TSFlags) {
+    return isKMasked(TSFlags) && (TSFlags & X86II::EVEX_Z) == 0;
   }
 }
 
