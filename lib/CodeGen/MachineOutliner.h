@@ -59,12 +59,12 @@ struct Candidate {
 };
 
 /// Output for candidates for debugging purposes.
-raw_ostream& operator <<(raw_ostream& os, const Candidate& c) {
-    os << *(c.Str) << "\n";
-    os << "StartIdxInBB: " << c.StartIdxInBB << "\n";
-    os << "EndIdxInBB: " << c.EndIdxInBB << "\n";
-    return os;
-  }
+raw_ostream &operator<<(raw_ostream &os, const Candidate &c) {
+  os << *(c.Str) << "\n";
+  os << "StartIdxInBB: " << c.StartIdxInBB << "\n";
+  os << "EndIdxInBB: " << c.EndIdxInBB << "\n";
+  return os;
+}
 
 /// Helper struct that stores information about an actual outlined function.
 struct OutlinedFunction {
@@ -88,16 +88,16 @@ struct OutlinedFunction {
                    const int &OccurrenceCount_)
       : OccBB(OccBB_), BBParent(BBParent_), IdxInSC(IdxInSC_),
         StartIdxInBB(StartIdxInBB_), EndIdxInBB(EndIdxInBB_), Name(Name_),
-        Id(Id_), OccurrenceCount(OccurrenceCount_){
-          Created = false;
-        }
+        Id(Id_), OccurrenceCount(OccurrenceCount_) {
+    Created = false;
+  }
 };
-
 
 struct MachineOutliner : public ModulePass {
   static char ID;
 
-  DenseMap<MachineInstr *, int, MachineInstrExpressionTrait> InstructionIntegerMap;
+  DenseMap<MachineInstr *, int, MachineInstrExpressionTrait>
+      InstructionIntegerMap;
   STree *ST = nullptr;
 
   // Target information
@@ -176,7 +176,8 @@ void MachineOutliner::buildProxyString(ContainerType &Container,
 
       // Otherwise, it wasn't there, so we should put it there!
       else {
-        InstructionIntegerMap.insert(std::pair<MachineInstr *, int>(&*BBI, CurrLegalInstrMapping));
+        InstructionIntegerMap.insert(
+            std::pair<MachineInstr *, int>(&*BBI, CurrLegalInstrMapping));
         Container.push_back(CurrLegalInstrMapping);
         CurrLegalInstrMapping++;
         CurrentFunctionID++;
@@ -261,8 +262,7 @@ void MachineOutliner::buildCandidateList(
 
     std::sort(CandidateList.begin(), CandidateList.end());
 
-    DEBUG(
-    for (size_t i = 0, e = CandidateList.size(); i < e; i++) {
+    DEBUG(for (size_t i = 0, e = CandidateList.size(); i < e; i++) {
       dbgs() << "Candidate " << i << ": \n";
       dbgs() << CandidateList[i] << "\n";
     });
@@ -298,16 +298,14 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   const TargetInstrInfo *TII = target->getInstrInfo();
 
   /// Find where the occurrence we want to copy starts and ends.
-  DEBUG (
-  dbgs() << "OF.StartIdxInBB = " << OF.StartIdxInBB << "\n";
-  dbgs() << "OF.EndIdxInBB = " << OF.EndIdxInBB << "\n";
-  );
+  DEBUG(dbgs() << "OF.StartIdxInBB = " << OF.StartIdxInBB << "\n";
+        dbgs() << "OF.EndIdxInBB = " << OF.EndIdxInBB << "\n";);
 
   int i;
   auto StartIt = OF.OccBB->instr_begin();
 
   for (i = 0; i < OF.StartIdxInBB; i++)
-      ++StartIt;
+    ++StartIt;
 
   auto EndIt = StartIt;
 
@@ -334,13 +332,9 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 
   TII->insertOutlinerProlog(MBB, MF);
 
-  DEBUG (
-  dbgs() << "New function: \n";
-  dbgs() << *Name << ":\n";
-  for (auto MBB = MF.begin(), EBB = MF.end(); MBB != EBB; MBB++) {
-      (&(*MBB))->dump();
-  }
-  );
+  DEBUG(dbgs() << "New function: \n"; dbgs() << *Name << ":\n";
+        for (auto MBB = MF.begin(), EBB = MF.end(); MBB != EBB;
+             MBB++) { (&(*MBB))->dump(); });
 
   return &MF;
 }
@@ -356,9 +350,9 @@ bool MachineOutliner::outline(Module &M,
   int Offset = 0;
 
   for (size_t i = 0; i < FunctionList.size(); i++) {
-      OutlinedFunction OF = FunctionList[i];
-      FunctionList[i].MF = createOutlinedFunction(M, OF);
-      FunctionList[i].Created = true;
+    OutlinedFunction OF = FunctionList[i];
+    FunctionList[i].MF = createOutlinedFunction(M, OF);
+    FunctionList[i].Created = true;
   }
 
   /// Replace the candidates with calls to their respective outlined functions.
