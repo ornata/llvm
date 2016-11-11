@@ -108,7 +108,7 @@ struct MachineOutliner : public ModulePass {
   std::vector<std::string *> *FunctionNames; // FIXME: Release function names.
 
   bool runOnModule(Module &M) override;
-  const char *getPassName() const override { return "Outliner"; }
+  StringRef getPassName() const override { return "Outliner"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MachineModuleInfo>();
@@ -307,7 +307,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   auto StartIt = OF.OccBB->instr_begin();
 
   for (i = 0; i < OF.StartIdxInBB; i++)
-    ++StartIt;
+      ++StartIt;
 
   auto EndIt = StartIt;
 
@@ -355,6 +355,12 @@ bool MachineOutliner::outline(Module &M,
   bool OutlinedSomething = false;
   int Offset = 0;
 
+  for (size_t i = 0; i < FunctionList.size(); i++) {
+      OutlinedFunction OF = FunctionList[i];
+      FunctionList[i].MF = createOutlinedFunction(M, OF);
+      FunctionList[i].Created = true;
+  }
+
   /// Replace the candidates with calls to their respective outlined functions.
   for (const Candidate &C : CandidateList) {
     int OffsetedStringStart = C.StartIdxInBB + Offset;
@@ -382,13 +388,6 @@ bool MachineOutliner::outline(Module &M,
 
     if (AlreadyOutlinedFrom || FunctionList[C.FunctionIdx].OccurrenceCount < 2)
       continue;
-
-    // If the function hasn't been created yet, then insert it into the program.
-    if (FunctionList[C.FunctionIdx].Created == false) {
-      OutlinedFunction OF = FunctionList[C.FunctionIdx];
-      FunctionList[C.FunctionIdx].MF = createOutlinedFunction(M, OF); 
-      FunctionList[C.FunctionIdx].Created = true;           
-    }
 
     /// We have a candidate which doesn't conflict with any other candidates, so
     /// we can go ahead and outline it.
