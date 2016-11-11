@@ -504,9 +504,12 @@ public:
   }
 
   bool runOnFunction(Function &F) override {
+      /*
     MachineModuleInfo &MMI = getAnalysis<MachineModuleInfo>();
     MMI.deleteMachineFunctionFor(F);
     return true;
+    */
+    return false;
   }
 };
 char FreeMachineFunction::ID;
