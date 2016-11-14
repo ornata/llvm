@@ -319,8 +319,10 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 
   MachineInstr *MI;
 
+  // Clone each machine instruction in the outlined range and insert them before
+  // the inserted epilogue.
   while (EndIt != StartIt) {
-    MI = OF.BBParent->CloneMachineInstr(&*EndIt);
+    MI = MF.CloneMachineInstr(&*EndIt);
     MI->dropMemRefs();
     MBB->insert(MBB->instr_begin(), MI);
     EndIt--;
@@ -470,7 +472,6 @@ bool MachineOutliner::runOnModule(Module &M) {
   OutlinedSomething = outline(M, Worklist, CandidateList, FunctionList);
 
   delete ST;
-
   return OutlinedSomething;
 }
 
