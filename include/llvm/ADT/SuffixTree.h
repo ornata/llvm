@@ -34,9 +34,10 @@ template <typename CharLike> struct STNode {
   bool Valid = true; // Set to true if we can traverse this node.
 
   STNode<CharLike> *Link; // Suffix Link.
-  size_t Start;              // Start index in TerminatedStringList.
-  size_t *End = nullptr;     // End index in TerminatedStringList.
-  size_t SuffixIndex = EmptyIndex;  // Stores index of suffix for path from Root to leaf.
+  size_t Start;           // Start index in TerminatedStringList.
+  size_t *End = nullptr;  // End index in TerminatedStringList.
+  size_t SuffixIndex =
+      EmptyIndex; // Stores index of suffix for path from Root to leaf.
 };
 
 /// SuffixTree
@@ -48,8 +49,8 @@ private:
   typedef TerminatedStringList<StringContainerType, CharLike> StringCollection;
   typedef Character<CharLike> CharacterType;
 
-  size_t size_; // Length of input string
-  size_t LeafEnd;   // The amount by which we extend all leaves in the trees
+  size_t InputLen; // Length of input string
+  size_t LeafEnd;  // The amount by which we extend all leaves in the trees
 
   /// ActiveState: Keeps track of what we're currently working on in the tree.
   /// That is, the node we start the phase from, the edge we're looking at,
@@ -57,7 +58,7 @@ private:
   struct ActiveState {
     Node *Node = nullptr;
     size_t Idx = EmptyIndex; // Index of Active character in the current string
-    size_t Len = 0;  // Length of the current substring
+    size_t Len = 0;          // Length of the current substring
   };
 
   ActiveState Active;
@@ -80,9 +81,8 @@ private:
     N->Link = nullptr;
     N->Parent = nullptr;
 
-    if (N->SuffixIndex == EmptyIndex && N->End != nullptr) {
+    if (N->SuffixIndex == EmptyIndex && N->End != nullptr)
       delete N->End;
-    }
 
     for (auto ChildPair : N->Children) {
       if (ChildPair.second != nullptr) {
@@ -181,9 +181,8 @@ private:
       }
     }
 
-    if (IsLeaf) {
+    if (IsLeaf)
       N->SuffixIndex = size() - LabelHeight;
-    }
   }
 
   /// Compute the suffix tree at the "phase" EndIdx from the previous suffix
@@ -284,12 +283,12 @@ public:
   StringCollection SC;
   Node *Root = nullptr;
 
-  size_t size() { return size_; }
+  size_t size() { return InputLen; }
 
-  /// print the suffix tree.
+  /// Print the suffix tree.
   void print() {
-    Node *curr = Root;
-    printHelper(curr, 0);
+    Node *Curr = Root;
+    printHelper(Curr, 0);
   }
 
   /// Add a string to an existing suffix tree. This continues the Ukkonen
@@ -299,8 +298,8 @@ public:
     SC.append(NewStr);
 
     // Save the old size so we can start at the end of the old string
-    size_t OldSize = size_;
-    size_ = SC.size();
+    size_t OldSize = InputLen;
+    InputLen = SC.size();
 
     size_t SuffixesToAdd = 0;
     Node *NeedsLink = nullptr; // The last size_ternal node added
@@ -308,7 +307,7 @@ public:
     // OldSize is initially 0 on the insertion of the first string. At the
     // insertion of the next string, OldSize is the index of the end of the
     // previous string.
-    for (size_t EndIdx = OldSize; EndIdx < size_; EndIdx++) {
+    for (size_t EndIdx = OldSize; EndIdx < InputLen; EndIdx++) {
       SuffixesToAdd++;
       NeedsLink = nullptr;
       LeafEnd = (size_t)EndIdx;
@@ -336,7 +335,8 @@ public:
 
     // We hit a leaf, so update MaxHeight if we've gone further down the
     // tree
-    else if (N.SuffixIndex != EmptyIndex && MaxHeight < (LabelHeight - nodeSize(N))) {
+    else if (N.SuffixIndex != EmptyIndex &&
+             MaxHeight < (LabelHeight - nodeSize(N))) {
       MaxHeight = LabelHeight - nodeSize(N);
       SubstringStartIdx = N.SuffixIndex;
       NumOccurrences = (size_t)N.Parent->Children.size();
@@ -458,6 +458,7 @@ public:
     return (N != nullptr && N->SuffixIndex != EmptyIndex);
   }
 
+  /// Print out the substring associated with some node.
   void printNode(Node &N) {
     errs() << "Node: ";
     printSubstring(N.Start, *N.End);
@@ -538,7 +539,7 @@ public:
   }
 
   /// Create a suffix tree and initialize it with str.
-  SuffixTree(String *str_) : size_(0u), LeafEnd(EmptyIndex) {
+  SuffixTree(String *str_) : InputLen(0u), LeafEnd(EmptyIndex) {
     SC = StringCollection();
     size_t *RootEnd = new size_t(EmptyIndex);
     Root = createNode(EmptyIndex, RootEnd, Root);
@@ -546,7 +547,8 @@ public:
     append(str_);
   }
 
-  SuffixTree(StringCollection str_) : size_(0u), LeafEnd(EmptyIndex) {
+  /// Create a suffix tree from a string collection.
+  SuffixTree(StringCollection str_) : InputLen(0u), LeafEnd(EmptyIndex) {
     size_t *RootEnd = new size_t(EmptyIndex);
     Root = createNode(EmptyIndex, RootEnd, Root);
     Active.Node = Root;
@@ -555,7 +557,8 @@ public:
       append(s);
   }
 
-  SuffixTree() : size_(0u), LeafEnd(EmptyIndex) {
+  /// Create an empty suffix tree.
+  SuffixTree() : InputLen(0u), LeafEnd(EmptyIndex) {
     size_t *RootEnd = new size_t(EmptyIndex);
     Root = createNode(EmptyIndex, RootEnd, Root);
     Active.Node = Root;
