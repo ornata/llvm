@@ -474,6 +474,7 @@ public:
     std::vector<std::pair<String *, size_t>> *Occurrences = nullptr;
     Node *N = find(QueryString, Len);
 
+    // FIXME: Pruning should happen in a separate function
     if (N != nullptr && N->Valid) {
       N->Valid = false;
       Occurrences = new std::vector<std::pair<String *, size_t>>();
