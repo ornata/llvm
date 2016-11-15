@@ -41,9 +41,9 @@ struct Candidate {
   MachineBasicBlock *BB;     // BB containing this Candidate
   MachineFunction *ParentMF; // Function containing bb
   String *Str;               // The actual string to outline
-  size_t Length;                // str->length()
-  size_t StartIdxInBB;          // Start index in the string
-  size_t EndIdxInBB;            // End index in the string
+  size_t Length;             // str->length()
+  size_t StartIdxInBB;       // Start index in the string
+  size_t EndIdxInBB;         // End index in the string
   size_t FunctionIdx; // Index of the candidate's function in the function list
 
   Candidate(MachineBasicBlock *bb_, MachineFunction *bb_BBParent_, String *Str_,
@@ -72,8 +72,8 @@ struct OutlinedFunction {
   MachineFunction *MF;       // The actual outlined function
   MachineBasicBlock *OccBB;  // The FIRST occurrence of its string
   MachineFunction *BBParent; // The BBParent of OccBB
-  size_t IdxInSC;               // The start index in the string.
-  size_t length;                // The length of that string.
+  size_t IdxInSC;            // The start index in the string.
+  size_t length;             // The length of that string.
   size_t max_Idx;
   size_t StartIdxInBB;    // The start index in OccBB.
   size_t EndIdxInBB;      // The end index in OccBB.
@@ -132,7 +132,7 @@ struct MachineOutliner : public ModulePass {
                std::vector<Candidate> &CandidateList,
                std::vector<OutlinedFunction> &FunctionList);
   size_t removeOutsideSameBB(std::vector<std::pair<String *, size_t>> &occ,
-                          const size_t &length, StringCollection &sc);
+                             const size_t &length, StringCollection &sc);
   MachineFunction *createOutlinedFunction(Module &M,
                                           const OutlinedFunction &OF);
   void buildCandidateList(std::vector<Candidate> &CandidateList,
@@ -157,7 +157,8 @@ void MachineOutliner::buildProxyString(ContainerType &Container,
       CurrIllegalInstrMapping--;
     }
 
-    // If it is legal, we either insert it size_to the map, or get its existing Id
+    // If it is legal, we either insert it size_to the map, or get its existing
+    // Id
     else {
       auto Mapping = InstructionIntegerMap.find(&*BBI);
 
@@ -304,7 +305,8 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   for (; i < OF.EndIdxInBB; ++i)
     ++EndIt;
 
-  /// Insert the instructions from the candidate size_to the function, along with
+  /// Insert the instructions from the candidate size_to the function, along
+  /// with
   /// the special epilogue and prologue for the outliner.
   MF.insert(MF.begin(), MBB);
   TII->insertOutlinerEpilog(MBB, MF);
@@ -400,7 +402,7 @@ bool MachineOutliner::outline(Module &M,
 
     /// Find the start of the candidate's range, insert the call before it, and
     /// then delete the range.
-    unsigned i;
+    size_t i;
     auto It = MBB->instr_begin();
     auto StartIt = It;
     auto EndIt = It;
