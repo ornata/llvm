@@ -30,8 +30,8 @@ using namespace llvm;
 
 template <typename C> struct Character {
   bool IsTerminator; /// True if the current character is a terminator.
-  C Symbol;           /// The actual character, eg 'a', 1, etc.
-  size_t Id;             /// If this is a terminator, then this is the Id.
+  C Symbol;          /// The actual character, eg 'a', 1, etc.
+  size_t Id;         /// If this is a terminator, then this is the Id.
 
   ///----------------  Comparisons between character types ------------------///
 
@@ -162,7 +162,8 @@ private:
 public:
   ///-------------------  Properties of TerminatedStrings  ------------------///
 
-  /// Note that size and length have different meanings. SizeStrings() includes the
+  /// Note that size and length have different meanings. SizeStrings() includes
+  /// the
   /// terminator in its result, while length() does not.
   size_t size() const { return StrContainer.size(); }
   size_t size() { return StrContainer.size(); }
@@ -298,7 +299,7 @@ public:
     assert(EndIdx < length() && "Out of range! (EndIdx >= length())");
     assert(StartIdx <= EndIdx && "StartIdx was greater than EndIdx");
     StrContainer.erase(StrContainer.begin() + StartIdx,
-                        StrContainer.begin() + EndIdx);
+                       StrContainer.begin() + EndIdx);
   }
 
   /// insertBefore(size_t, CharacterType): Insert c at the index i-1.
@@ -539,9 +540,10 @@ raw_ostream &
 operator<<(raw_ostream &OS,
            const TerminatedStringList<InputContainer, CharLike> &TS) {
   OS << "[";
-  
+
   for (auto It = TS.begin(), Et = TS.end(); It != Et; It++)
-    OS << "'" << **It << "'" << ", ";
+    OS << "'" << **It << "'"
+       << ", ";
 
   OS << "]";
 
