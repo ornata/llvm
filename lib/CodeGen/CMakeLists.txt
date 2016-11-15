@@ -141,6 +141,7 @@ add_llvm_library(LLVMCodeGen
   VirtRegMap.cpp
   WinEHPrepare.cpp
   XRayInstrumentation.cpp
+  MachineOutliner.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/CodeGen

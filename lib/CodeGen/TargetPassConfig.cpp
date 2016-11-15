@@ -35,7 +35,7 @@
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/SymbolRewriter.h"
-#include "MachineOutliner.h" // FIXME: This should be somewhere sane
+//#include "MachineOutliner.h" // FIXME: This should be somewhere sane
 
 using namespace llvm;
 
@@ -131,7 +131,7 @@ static cl::opt<CFLAAType> UseCFLAA(
                           "Enable unification-based CFL-AA"),
                clEnumValN(CFLAAType::Andersen, "anders",
                           "Enable inclusion-based CFL-AA"),
-               clEnumValN(CFLAAType::Both, "both", 
+               clEnumValN(CFLAAType::Both, "both",
                           "Enable both variants of CFL-AA")));
 
 /// Allow standard passes to be disabled by command line options. This supports
