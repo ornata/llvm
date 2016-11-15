@@ -1,4 +1,4 @@
-// Outliner - Transform repeated instruction sequences into function calls //
+// Outliner - Transform repeated instruction sequences size_to function calls //
 // ----------------------------------------------------------------------------
 //
 // This pass finds repeated, Identical sequences of instructions and replaces
@@ -29,7 +29,7 @@
 
 namespace {
 
-typedef int CharacterType;
+typedef size_t CharacterType;
 typedef std::vector<CharacterType> ContainerType;
 typedef TerminatedString<ContainerType, CharacterType> String;
 typedef TerminatedStringList<ContainerType, CharacterType> StringCollection;
@@ -41,14 +41,14 @@ struct Candidate {
   MachineBasicBlock *BB;     // BB containing this Candidate
   MachineFunction *ParentMF; // Function containing bb
   String *Str;               // The actual string to outline
-  int Length;                // str->length()
-  int StartIdxInBB;          // Start index in the string
-  int EndIdxInBB;            // End index in the string
-  int FunctionIdx; // Index of the candidate's function in the function list
+  size_t Length;                // str->length()
+  size_t StartIdxInBB;          // Start index in the string
+  size_t EndIdxInBB;            // End index in the string
+  size_t FunctionIdx; // Index of the candidate's function in the function list
 
   Candidate(MachineBasicBlock *bb_, MachineFunction *bb_BBParent_, String *Str_,
-            const int &Length_, const int &StartIdxInBB_,
-            const int &EndIdxInBB_, const int &fn_Id_)
+            const size_t &Length_, const size_t &StartIdxInBB_,
+            const size_t &EndIdxInBB_, const size_t &fn_Id_)
       : BB(bb_), ParentMF(bb_BBParent_), Str(Str_), Length(Length_),
         StartIdxInBB(StartIdxInBB_), EndIdxInBB(EndIdxInBB_),
         FunctionIdx(fn_Id_) {}
@@ -72,20 +72,20 @@ struct OutlinedFunction {
   MachineFunction *MF;       // The actual outlined function
   MachineBasicBlock *OccBB;  // The FIRST occurrence of its string
   MachineFunction *BBParent; // The BBParent of OccBB
-  int IdxInSC;               // The start index in the string.
-  int length;                // The length of that string.
-  int max_Idx;
-  int StartIdxInBB;    // The start index in OccBB.
-  int EndIdxInBB;      // The end index in OccBB.
-  int Name;            // The name of this function in the program.
-  int Id;              // The ID of this function in the proxy string.
-  int OccurrenceCount; // Number of times this function appeared.
+  size_t IdxInSC;               // The start index in the string.
+  size_t length;                // The length of that string.
+  size_t max_Idx;
+  size_t StartIdxInBB;    // The start index in OccBB.
+  size_t EndIdxInBB;      // The end index in OccBB.
+  size_t Name;            // The name of this function in the program.
+  size_t Id;              // The ID of this function in the proxy string.
+  size_t OccurrenceCount; // Number of times this function appeared.
 
   OutlinedFunction(MachineBasicBlock *OccBB_, MachineFunction *BBParent_,
-                   const int &IdxInSC_, const int &length_,
-                   const int &StartIdxInBB_, const int &EndIdxInBB_,
-                   const int &Name_, const int &Id_,
-                   const int &OccurrenceCount_)
+                   const size_t &IdxInSC_, const size_t &length_,
+                   const size_t &StartIdxInBB_, const size_t &EndIdxInBB_,
+                   const size_t &Name_, const size_t &Id_,
+                   const size_t &OccurrenceCount_)
       : OccBB(OccBB_), BBParent(BBParent_), IdxInSC(IdxInSC_),
         StartIdxInBB(StartIdxInBB_), EndIdxInBB(EndIdxInBB_), Name(Name_),
         Id(Id_), OccurrenceCount(OccurrenceCount_) {
@@ -101,10 +101,10 @@ struct MachineOutliner : public ModulePass {
   STree *ST = nullptr;
 
   // Target information
-  int FunctionCallOverhead; // TODO
+  size_t FunctionCallOverhead; // TODO
   int CurrIllegalInstrMapping;
   int CurrLegalInstrMapping;
-  int CurrentFunctionID;
+  size_t CurrentFunctionID;
   std::vector<std::string *> *FunctionNames; // FIXME: Release function names.
 
   bool runOnModule(Module &M) override;
@@ -131,16 +131,8 @@ struct MachineOutliner : public ModulePass {
   bool outline(Module &M, std::vector<MachineBasicBlock *> &Worklist,
                std::vector<Candidate> &CandidateList,
                std::vector<OutlinedFunction> &FunctionList);
-  int removeOutsideSameBB(std::vector<std::pair<String *, int>> &occ,
-                          const int &length, StringCollection &sc);
-  void updateProxyString(int Offset, const int &removed_per_step,
-                         StringCollection &c, const int &StartIdxInBB,
-                         const int &EndIdxInBB, const int &fn_Id);
-  void updateModule(std::vector<MachineBasicBlock *> &Worklist,
-                    MachineFunction *F, const int &removed_per_step,
-                    int &Offset, const int &bb_Idx, const int &StartIdxInBB,
-                    const int &EndIdxInBB, const int &fn_Id,
-                    MachineFunction *ofunc, Module &M);
+  size_t removeOutsideSameBB(std::vector<std::pair<String *, size_t>> &occ,
+                          const size_t &length, StringCollection &sc);
   MachineFunction *createOutlinedFunction(Module &M,
                                           const OutlinedFunction &OF);
   void buildCandidateList(std::vector<Candidate> &CandidateList,
@@ -165,7 +157,7 @@ void MachineOutliner::buildProxyString(ContainerType &Container,
       CurrIllegalInstrMapping--;
     }
 
-    // If it is legal, we either insert it into the map, or get its existing Id
+    // If it is legal, we either insert it size_to the map, or get its existing Id
     else {
       auto Mapping = InstructionIntegerMap.find(&*BBI);
 
@@ -187,12 +179,12 @@ void MachineOutliner::buildProxyString(ContainerType &Container,
 }
 
 /// Remove candidates which don't lie within the same MachineBasicBlock.
-int MachineOutliner::removeOutsideSameBB(
-    std::vector<std::pair<String *, int>> &Occurrences, const int &Length,
+size_t MachineOutliner::removeOutsideSameBB(
+    std::vector<std::pair<String *, size_t>> &Occurrences, const size_t &Length,
     StringCollection &SC) {
-  int Removed = 0;
+  size_t Removed = 0;
 
-  // StringLocation: first = index of the string, second = index into that
+  // StringLocation: first = index of the string, second = index size_to that
   // string.
   for (size_t i = 0; i < Occurrences.size(); i++) {
     auto StringLocation = SC.stringIndexContaining(Occurrences[i].second);
@@ -217,9 +209,9 @@ void MachineOutliner::buildCandidateList(
 
   // FIXME: That 2 should be a target-dependent minimum length.
   if (CandidateString != nullptr && CandidateString->length() >= 2) {
-    int FunctionsCreated = 0;
+    size_t FunctionsCreated = 0;
     StringCollection SC = ST->SC;
-    std::vector<std::pair<String *, int>> *Occurrences =
+    std::vector<std::pair<String *, size_t>> *Occurrences =
         ST->findOccurrences(*CandidateString);
 
     // Query the tree for candidates until we run out of candidates to outline.
@@ -232,10 +224,10 @@ void MachineOutliner::buildCandidateList(
       // make it a function and keep track of it.
       if (Occurrences->size() >= 2) {
         auto FirstOcc = (*Occurrences)[0];
-        int IdxInSC = FirstOcc.second;
+        size_t IdxInSC = FirstOcc.second;
         auto StringLocation = ST->SC.stringIndexContaining(IdxInSC);
-        int StartIdxInBB = StringLocation.second;
-        int EndIdxInBB = StartIdxInBB + CandidateString->length() - 1;
+        size_t StartIdxInBB = StringLocation.second;
+        size_t EndIdxInBB = StartIdxInBB + CandidateString->length() - 1;
         MachineBasicBlock *OccBB = Worklist[StringLocation.first];
         MachineFunction *BBParent = OccBB->getParent();
 
@@ -274,7 +266,7 @@ void MachineOutliner::buildCandidateList(
 MachineFunction *
 MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 
-  // Create the function name and store it into the function list.
+  // Create the function name and store it size_to the function list.
   std::ostringstream NameStream;
   NameStream << "OUTLINED_FUNCTION" << OF.Name;
   std::string *Name = new std::string(NameStream.str());
@@ -301,7 +293,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   DEBUG(dbgs() << "OF.StartIdxInBB = " << OF.StartIdxInBB << "\n";
         dbgs() << "OF.EndIdxInBB = " << OF.EndIdxInBB << "\n";);
 
-  int i;
+  size_t i;
   auto StartIt = OF.OccBB->instr_begin();
 
   for (i = 0; i < OF.StartIdxInBB; i++)
@@ -312,7 +304,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   for (; i < OF.EndIdxInBB; ++i)
     ++EndIt;
 
-  /// Insert the instructions from the candidate into the function, along with
+  /// Insert the instructions from the candidate size_to the function, along with
   /// the special epilogue and prologue for the outliner.
   MF.insert(MF.begin(), MBB);
   TII->insertOutlinerEpilog(MBB, MF);
@@ -328,7 +320,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
     EndIt--;
   }
 
-  MI = OF.BBParent->CloneMachineInstr(&*EndIt);
+  MI = MF.CloneMachineInstr(&*EndIt);
   MI->dropMemRefs();
   MBB->insert(MBB->instr_begin(), MI);
 
@@ -359,8 +351,8 @@ bool MachineOutliner::outline(Module &M,
 
   /// Replace the candidates with calls to their respective outlined functions.
   for (const Candidate &C : CandidateList) {
-    int OffsetedStringStart = C.StartIdxInBB + Offset;
-    int OffsetedStringEnd = OffsetedStringStart + C.Length;
+    size_t OffsetedStringStart = C.StartIdxInBB + Offset;
+    size_t OffsetedStringEnd = OffsetedStringStart + C.Length;
 
     /// If this spot doesn't match with our string, we must have already
     /// outlined something from here. Therefore, we should skip it to avoid
@@ -368,11 +360,11 @@ bool MachineOutliner::outline(Module &M,
 
     // If the offsetted string starts below index 0, we must have overlapped
     // something
-    bool AlreadyOutlinedFrom = (OffsetedStringStart < 0);
+    bool AlreadyOutlinedFrom = (OffsetedStringStart > OffsetedStringEnd);
 
     if (!AlreadyOutlinedFrom) {
-      int j = 0;
-      for (int i = OffsetedStringStart; i < OffsetedStringEnd; i++) {
+      size_t j = 0;
+      for (size_t i = OffsetedStringStart; i < OffsetedStringEnd; i++) {
         if (SC[i] != (*(C.Str))[j]) {
           FunctionList[C.FunctionIdx].OccurrenceCount--;
           AlreadyOutlinedFrom = true;
@@ -403,8 +395,8 @@ bool MachineOutliner::outline(Module &M,
 
     /// Get the name of the function we want to insert a call to.
     MCContext &Ctx = MF->getContext();
-    Twine InternalName = Twine("l_", MF->getName());
-    MCSymbol *Name = Ctx.getOrCreateSymbol(InternalName);
+    Twine size_ternalName = Twine("l_", MF->getName());
+    MCSymbol *Name = Ctx.getOrCreateSymbol(size_ternalName);
 
     /// Find the start of the candidate's range, insert the call before it, and
     /// then delete the range.
@@ -477,7 +469,7 @@ bool MachineOutliner::runOnModule(Module &M) {
 
 char MachineOutliner::ID = 0;
 
-// FIXME: Free after printing
+// FIXME: Free after prsize_ting
 std::vector<std::string *> *OutlinerFunctionNames;
 
 ModulePass *createOutlinerPass() {
