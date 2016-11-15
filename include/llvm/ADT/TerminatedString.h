@@ -31,7 +31,7 @@ using namespace llvm;
 template <typename C> struct Character {
   bool is_terminator; /// True if the current character is a terminator.
   C symbol;           /// The actual character, eg 'a', 1, etc.
-  int id;             /// If this is a terminator, then this is the id.
+  size_t id;             /// If this is a terminator, then this is the id.
 
   ///----------------  Comparisons between character types ------------------///
 
@@ -154,7 +154,7 @@ raw_ostream &operator<<(raw_ostream &OS, const Character<C> &Ch) {
 template <typename InputContainer, typename CharacterType>
 struct TerminatedString {
 private:
-  static int str_id;
+  static size_t str_id;
   typedef Character<CharacterType> CharLike;
   typedef std::vector<CharLike> CharList;
   CharList str_container; /// The container for the string's characters.
@@ -164,10 +164,10 @@ public:
 
   /// Note that size and length have different meanings. Size() includes the
   /// terminator in its result, while length() does not.
-  unsigned size() const { return str_container.size(); }
-  unsigned size() { return str_container.size(); }
-  unsigned length() { return str_container.size() - 1; }
-  unsigned length() const { return str_container.size() - 1; }
+  size_t size() const { return str_container.size(); }
+  size_t size() { return str_container.size(); }
+  size_t length() { return str_container.size() - 1; }
+  size_t length() const { return str_container.size() - 1; }
   CharLike getTerminator() const { return str_container.back(); }
 
   ///-------------------  Iterators for TerminatedStrings -------------------///
@@ -211,7 +211,7 @@ public:
   }
 
   /// []: Returns the character at index Idx.
-  CharLike operator[](unsigned Idx) const {
+  CharLike operator[](size_t Idx) const {
     assert(Idx < size() && "Out of range! (Idx >= size())");
     return str_container[Idx];
   }
@@ -251,7 +251,7 @@ public:
     assert(Term.is_terminator && "Last character wasn't a terminator!");
     str_container.pop_back();
 
-    for (int i = 0; i < rhs.size(); i++) {
+    for (size_t i = 0; i < rhs.size(); i++) {
       CharLike c;
       c.symbol = rhs[i];
       c.is_terminator = false;
@@ -268,9 +268,9 @@ public:
     assert(size() > 0 && "String is non-terminated!");
     CharLike Term = str_container.back();
     str_container.pop_back();
-    int max = rhs.length();
+    size_t max = rhs.length();
 
-    for (int i = 0; i < max; i++) {
+    for (size_t i = 0; i < max; i++) {
       CharLike c;
       c.symbol = rhs[i];
       c.is_terminator = false;
@@ -283,18 +283,18 @@ public:
 
   ///------------------  Operations on TerminatedStrings --------------------///
 
-  /// erase (unsigned): Remove the character at index i from the
+  /// erase (size_t): Remove the character at index i from the
   /// TerminatedString
-  void erase(const unsigned &Idx) {
+  void erase(const size_t &Idx) {
     assert(Idx != length() && "Can't erase terminator! (Idx == length())");
     assert(Idx < size() && "Out of range! (Idx >= size())");
 
     str_container.erase(str_container.begin() + Idx);
   }
 
-  /// erase(unsigned, unsigned): Remove the characters in the interval
+  /// erase(size_t, size_t): Remove the characters in the size_terval
   /// [StartIdx, EndIdx] from the TerminatedString
-  void erase(const unsigned &StartIdx, const unsigned &EndIdx) {
+  void erase(const size_t &StartIdx, const size_t &EndIdx) {
     assert(StartIdx < length() && "Out of range! (StartIdx >= length())");
     assert(EndIdx < length() && "Out of range! (EndIdx >= length())");
     assert(StartIdx <= EndIdx && "StartIdx was greater than EndIdx");
@@ -302,8 +302,8 @@ public:
                         str_container.begin() + EndIdx);
   }
 
-  /// insertBefore(unsigned, CharacterType): Insert c at the index i-1.
-  iterator insertBefore(const unsigned &Idx, const CharacterType &Symbol) {
+  /// insertBefore(size_t, CharacterType): Insert c at the index i-1.
+  iterator insertBefore(const size_t &Idx, const CharacterType &Symbol) {
     assert(Idx < size() && "Out of range! (Idx >= size())");
     auto ContainerIt = str_container.begin() + Idx;
     CharLike NewChar;
@@ -334,7 +334,7 @@ public:
 
   /// Create a copy of another TerminatedString, including the terminator.
   TerminatedString(const TerminatedString &other) {
-    for (unsigned i = 0; i < other.size(); i++)
+    for (size_t i = 0; i < other.size(); i++)
       str_container.push_back(other[i]);
   }
 
@@ -358,7 +358,7 @@ raw_ostream &operator<<(raw_ostream &OS,
 }
 
 template <typename InputContainer, typename CharLike>
-int TerminatedString<InputContainer, CharLike>::str_id = 0;
+size_t TerminatedString<InputContainer, CharLike>::str_id = 0;
 
 /// ====================== TerminatedStringList Type ======================= ///
 
@@ -367,14 +367,14 @@ int TerminatedString<InputContainer, CharLike>::str_id = 0;
 ///
 /// This represents a group of strings appended together to form a large
 /// compound string. TerminatedStringLists act exactly like
-/// normal TerminatedStrings, but allow us to maintain the individuality of
+/// normal TerminatedStrings, but allow us to masize_tain the individuality of
 /// specific strings.
 
 template <typename InputContainer, typename CharLike>
 struct TerminatedStringList {
 private:
-  unsigned size_chars_;   // Sum of size() for each string in list
-  unsigned size_strings_; // Number of strings in the list
+  size_t size_chars_;   // Sum of size() for each string in list
+  size_t size_strings_; // Number of strings in the list
 
   typedef TerminatedString<InputContainer, CharLike> String;
   typedef std::vector<String *> StringContainer;
@@ -402,7 +402,7 @@ public:
   /// TerminatedStringList
   /// itself as a string. This does NOT return the string at index i. This is
   /// for compatability with Ukkonen's algorithm.
-  CharacterType operator[](unsigned Idx) {
+  CharacterType operator[](size_t Idx) {
     assert(Idx < size_chars_ && "Out of range! (Idx >= size_chars)");
     auto StrIdx = stringIndexContaining(Idx);
 
@@ -418,13 +418,13 @@ public:
   void clear() { str.clear(); }
 
   /// size(): Return the number of characters in the TerminatedStringList.
-  unsigned size() { return size_chars_; }
+  size_t size() { return size_chars_; }
 
   /// back(): Return the element at the end of the TerminatedStringList.
   String back() { return *(str.back()); }
 
   /// stringCount(): Return the number of strings in the TerminatedStringList.
-  unsigned stringCount() { return size_strings_; }
+  size_t stringCount() { return size_strings_; }
 
   /// Append(String*): Append a String* to the TerminatedStringList.
   void append(String *str_) {
@@ -448,19 +448,19 @@ public:
 
   // +=, TerminatedStringList: Append the strings in the rhs to this list
   TerminatedStringList operator+=(TerminatedStringList &Other) {
-    for (int Idx = 0; Idx < Other.stringCount(); Idx++)
+    for (size_t Idx = 0; Idx < Other.stringCount(); Idx++)
       append(Other.stringAt(Idx));
     return *this;
   }
 
   /// stringAt(): Return the string with index i
-  String stringAt(const unsigned &Idx) {
+  String stringAt(const size_t &Idx) {
     assert(Idx < size_chars_ && "Out of range! (Idx >= size_chars)");
     return *(str[Idx]);
   }
 
   /// Insert the character c before the index i in the string
-  iterator insertBefore(const unsigned &Idx, const CharLike &C) {
+  iterator insertBefore(const size_t &Idx, const CharLike &C) {
     assert(Idx < size_chars_ && "Out of range! (Idx >= size_chars)");
     auto string_pair = stringContaining(Idx);
     string_pair.first->insertBefore(string_pair.second, C);
@@ -469,12 +469,12 @@ public:
     return begin() + Idx;
   }
 
-  /// stringContaining(unsigned): Return the index of the string that index i
-  /// maps into. If out of bounds, return -1.
-  std::pair<unsigned, unsigned> stringIndexContaining(unsigned Idx) {
+  /// stringContaining(size_t): Return the index of the string that index i
+  /// maps size_to. If out of bounds, return -1.
+  std::pair<size_t, size_t> stringIndexContaining(size_t Idx) {
     assert(Idx < size_chars_ && "Out of range! (Idx >= size_chars)");
     /// Find the string index containing i.
-    unsigned StrIdx;
+    size_t StrIdx;
     for (StrIdx = 0; StrIdx != size_strings_ - 1; StrIdx++) {
 
       /// Idx must be inside the string, since it's in the range [0, size-1].
@@ -489,32 +489,32 @@ public:
     return std::make_pair(StrIdx, Idx);
   }
 
-  /// stringContaining: Return the string that the index i maps into, and the
+  /// stringContaining: Return the string that the index i maps size_to, and the
   /// local index for that string.
-  std::pair<String *, unsigned> stringContaining(unsigned Idx) {
+  std::pair<String *, size_t> stringContaining(size_t Idx) {
     assert(Idx < size_chars_ && "Out of range! (Idx >= size_chars)");
     auto StrIdx = stringIndexContaining(Idx);
 
     return make_pair(str[StrIdx.first], StrIdx.second);
   }
 
-  /// erase(unsigned): Remove the character at index i in the
+  /// erase(size_t): Remove the character at index i in the
   /// TerminatedStringList
-  void erase(unsigned Idx) {
+  void erase(size_t Idx) {
     assert(Idx < size_chars_ && "Out of range! (Idx >= size_chars)");
     auto string_pair = stringContaining(Idx);
     string_pair.first->erase(string_pair.second);
     size_chars_--;
   }
 
-  /// erase(unsigned, unsigned): Remove the characters in the range [StartIdx,
+  /// erase(size_t, size_t): Remove the characters in the range [StartIdx,
   /// EndIdx] from the TerminatedStringList
-  void erase(unsigned StartIdx, unsigned EndIdx) {
+  void erase(size_t StartIdx, size_t EndIdx) {
     assert(StartIdx < size_chars_ && "Out of range! (StartIdx >= size_chars)");
     assert(EndIdx < size_chars_ && "Out of range! (EndIdx >= size_chars)");
 
-    unsigned RangeLen = EndIdx - StartIdx;
-    unsigned NumRemoved = 0;
+    size_t RangeLen = EndIdx - StartIdx;
+    size_t NumRemoved = 0;
 
     while (NumRemoved < RangeLen) {
       erase(StartIdx);
