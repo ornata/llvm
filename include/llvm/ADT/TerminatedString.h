@@ -1,12 +1,19 @@
-/// TerminatedString.h
-///----------------------------------------------------------------------------
-/// This file contains definitions for a "terminated string" and a "terminated
-/// string list." These are the string types used in SuffixTree.h.
-/// A TerminatedString is a collection of Characters followed by an unique
-/// terminator. TerminatedStringLists are higher-order TerminatedStrings; they
-/// are a list of TerminatedStrings which act as a TerminatedString themselves.
-/// This definition is required for the suffix tree's construction method.
-///----------------------------------------------------------------------------
+//===---- TerminatedString.h - Uniquely terminated string ------*- C++ -*-===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===---------------------------------------------------------------------===//
+//
+// A TerminatedString is a string which has a unique senteniel character at
+// the end of it. Each TerminatedString consists of Characters of some type.
+// A Character is either a Terminator or an instance of some type which can
+// be compared against other types. TerminatedStrings ensure that the strings
+// inserted into a SuffixTree are uniquely terminated.
+//
+//===---------------------------------------------------------------------===//
 
 #ifndef TERM_STRING_H
 #define TERM_STRING_H

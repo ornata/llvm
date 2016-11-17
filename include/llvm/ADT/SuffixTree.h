@@ -1,15 +1,30 @@
-/// SuffixTree
-/// Stores all of the suffixes of a string, or of several strings.
-/// In this context a "string" refers to an ordered list of some type.
-/// Thus, it can be a collection of characters, integers, basic blocks, dogs,
-/// or whatever you want.
-///
-/// This data structure can be used to find information about the structure of
-/// strings. For example, we can find out what the most common pattern of some
-/// length is in some given string by storing it in a Suffix Tree.
-///
-/// Suffix trees are constructed online in O(n) using Ukkonen's algorithm, where
-/// n = the length of the string.
+//===---- SuffixTree.h - String searching data structure ---------*- C++ -*-===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+//
+// The suffix tree is a data type which supports fast substring queries.
+// Queries on the suffix tree can be done by simply finding leaf nodes, which
+// contain the suffixes of an input string. Suffix trees are constructed using
+// Ukkonen's linear-time algorithm. Suffix trees can be constructed for any
+// "string-like" data structure using the TerminatedString type.
+// "String-like" refers to any finite list of "characters" over some
+// alphabet.
+//
+// Generalized suffix trees can be constructed by inserting lists of strings
+// into the tree instead of a single string. Strings inserted to any suffix
+// tree, generalized or not, should be uniquely terminated. That is, if
+// we want to insert "BANANA" into the tree, we should insert something like
+// "BANANA$" instead. Similarly, if we want to create a generalized suffix
+// tree containing "BANANA" and "PUPPY", we should insert something like
+// "BANANA$1PUPPY$2". The TerminatedString type ensures that every string
+// will be uniquely terminated.
+//
+//===----------------------------------------------------------------------===//
 
 #ifndef SUFFIXTREE_H
 #define SUFFIXTREE_H
@@ -474,7 +489,7 @@ public:
     std::vector<std::pair<String *, size_t>> *Occurrences = nullptr;
     Node *N = find(QueryString, Len);
 
-    // FIXME: Pruning should happen in a separate function
+    // FIXME: Pruning should happen in a separate function.
     if (N != nullptr && N->Valid) {
       N->Valid = false;
       Occurrences = new std::vector<std::pair<String *, size_t>>();
