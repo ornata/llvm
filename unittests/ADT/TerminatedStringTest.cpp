@@ -35,7 +35,7 @@ protected:
     EXPECT_EQ(str.length(), oldLen + 1);
     EXPECT_EQ(str.size(), oldSize + 1);
     EXPECT_EQ(*(str.chars_end() - 1), c);
-    EXPECT_TRUE((*str.chars_end()).is_terminator);
+    EXPECT_TRUE((*str.chars_end()).IsTerminator);
   }
 };
 
@@ -271,7 +271,7 @@ TEST_F(TerminatedStringTest, ContainerConstructorTest) {
   for (int i = 0; i < 100; i++)
     EXPECT_EQ(s[i], i);
 
-  EXPECT_TRUE((*s.chars_end()).is_terminator);
+  EXPECT_TRUE((*s.chars_end()).IsTerminator);
 }
 
 } // Anonymous namespace.
