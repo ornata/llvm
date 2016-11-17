@@ -240,10 +240,6 @@ unsigned HexagonInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
   switch (MI.getOpcode()) {
   default:
     break;
-  case Hexagon::L2_loadrb_io:
-  case Hexagon::L2_loadrub_io:
-  case Hexagon::L2_loadrh_io:
-  case Hexagon::L2_loadruh_io:
   case Hexagon::L2_loadri_io:
   case Hexagon::L2_loadrd_io:
   case Hexagon::V6_vL32b_ai:
@@ -266,14 +262,6 @@ unsigned HexagonInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
     return MI.getOperand(0).getReg();
   }
 
-  case Hexagon::L2_ploadrbt_io:
-  case Hexagon::L2_ploadrbf_io:
-  case Hexagon::L2_ploadrubt_io:
-  case Hexagon::L2_ploadrubf_io:
-  case Hexagon::L2_ploadrht_io:
-  case Hexagon::L2_ploadrhf_io:
-  case Hexagon::L2_ploadruht_io:
-  case Hexagon::L2_ploadruhf_io:
   case Hexagon::L2_ploadrit_io:
   case Hexagon::L2_ploadrif_io:
   case Hexagon::L2_ploadrdt_io:
@@ -2171,7 +2159,7 @@ bool HexagonInstrInfo::isJumpR(const MachineInstr &MI) const {
 }
 
 
-// Return true if a given MI can accomodate given offset.
+// Return true if a given MI can accommodate given offset.
 // Use abs estimate as oppose to the exact number.
 // TODO: This will need to be changed to use MC level
 // definition of instruction extendable field size.
@@ -3216,7 +3204,7 @@ bool HexagonInstrInfo::getBaseAndOffsetPosition(const MachineInstr &MI,
 }
 
 
-// Inserts branching instructions in reverse order of their occurence.
+// Inserts branching instructions in reverse order of their occurrence.
 // e.g. jump_t t1 (i1)
 // jump t2        (i2)
 // Jumpers = {i2, i1}

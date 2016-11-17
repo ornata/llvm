@@ -7,12 +7,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/AsmParser/Parser.h"
+#include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Bitcode/BitstreamWriter.h"
-#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
@@ -54,8 +55,10 @@ static std::unique_ptr<Module> getLazyModuleFromAssembly(LLVMContext &Context,
                                                          SmallString<1024> &Mem,
                                                          const char *Assembly) {
   writeModuleToBuffer(parseAssembly(Context, Assembly), Mem);
-  ErrorOr<std::unique_ptr<Module>> ModuleOrErr =
+  Expected<std::unique_ptr<Module>> ModuleOrErr =
       getLazyBitcodeModule(MemoryBufferRef(Mem.str(), "test"), Context);
+  if (!ModuleOrErr)
+    report_fatal_error("Could not parse bitcode module");
   return std::move(ModuleOrErr.get());
 }
 

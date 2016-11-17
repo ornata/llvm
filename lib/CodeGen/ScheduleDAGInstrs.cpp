@@ -247,11 +247,8 @@ void ScheduleDAGInstrs::exitRegion() {
 void ScheduleDAGInstrs::addSchedBarrierDeps() {
   MachineInstr *ExitMI = RegionEnd != BB->end() ? &*RegionEnd : nullptr;
   ExitSU.setInstr(ExitMI);
-  bool AllDepKnown = ExitMI &&
-    (ExitMI->isCall() || ExitMI->isBarrier());
-  if (ExitMI && AllDepKnown) {
-    // If it's a call or a barrier, add dependencies on the defs and uses of
-    // instruction.
+  // Add dependencies on the defs and uses of the instruction.
+  if (ExitMI) {
     for (const MachineOperand &MO : ExitMI->operands()) {
       if (!MO.isReg() || MO.isDef()) continue;
       unsigned Reg = MO.getReg();
@@ -261,10 +258,10 @@ void ScheduleDAGInstrs::addSchedBarrierDeps() {
         addVRegUseDeps(&ExitSU, ExitMI->getOperandNo(&MO));
       }
     }
-  } else {
+  }
+  if (!ExitMI || (!ExitMI->isCall() && !ExitMI->isBarrier())) {
     // For others, e.g. fallthrough, conditional branch, assume the exit
     // uses all the registers that are livein to the successor blocks.
-    assert(Uses.empty() && "Uses in set before adding deps?");
     for (const MachineBasicBlock *Succ : BB->successors()) {
       for (const auto &LI : Succ->liveins()) {
         if (!Uses.contains(LI.PhysReg))
@@ -323,6 +320,9 @@ void ScheduleDAGInstrs::addPhysRegDeps(SUnit *SU, unsigned OperIdx) {
   MachineInstr *MI = SU->getInstr();
   MachineOperand &MO = MI->getOperand(OperIdx);
   unsigned Reg = MO.getReg();
+  // We do not need to track any dependencies for constant registers.
+  if (MRI.isConstantPhysReg(Reg))
+    return;
 
   // Optionally add output and anti dependencies. For anti
   // dependencies we use a latency of 0 because for a multi-issue
@@ -680,44 +680,6 @@ void ScheduleDAGInstrs::initSUnits() {
   }
 }
 
-void ScheduleDAGInstrs::collectVRegUses(SUnit *SU) {
-  const MachineInstr *MI = SU->getInstr();
-  for (const MachineOperand &MO : MI->operands()) {
-    if (!MO.isReg())
-      continue;
-    if (!MO.readsReg())
-      continue;
-    if (TrackLaneMasks && !MO.isUse())
-      continue;
-
-    unsigned Reg = MO.getReg();
-    if (!TargetRegisterInfo::isVirtualRegister(Reg))
-      continue;
-
-    // Ignore re-defs.
-    if (TrackLaneMasks) {
-      bool FoundDef = false;
-      for (const MachineOperand &MO2 : MI->operands()) {
-        if (MO2.isReg() && MO2.isDef() && MO2.getReg() == Reg && !MO2.isDead()) {
-          FoundDef = true;
-          break;
-        }
-      }
-      if (FoundDef)
-        continue;
-    }
-
-    // Record this local VReg use.
-    VReg2SUnitMultiMap::iterator UI = VRegUses.find(Reg);
-    for (; UI != VRegUses.end(); ++UI) {
-      if (UI->SU == SU)
-        break;
-    }
-    if (UI == VRegUses.end())
-      VRegUses.insert(VReg2SUnit(Reg, 0, SU));
-  }
-}
-
 class ScheduleDAGInstrs::Value2SUsMap : public MapVector<ValueType, SUList> {
 
   /// Current total number of SUs in map.
@@ -895,9 +857,6 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
   CurrentVRegDefs.setUniverse(NumVirtRegs);
   CurrentVRegUses.setUniverse(NumVirtRegs);
 
-  VRegUses.clear();
-  VRegUses.setUniverse(NumVirtRegs);
-
   // Model data dependencies between instructions being scheduled and the
   // ExitSU.
   addSchedBarrierDeps();
@@ -920,8 +879,6 @@ void ScheduleDAGInstrs::buildSchedGraph(AliasAnalysis *AA,
     assert(SU && "No SUnit mapped to this MI");
 
     if (RPTracker) {
-      collectVRegUses(SU);
-
       RegisterOperands RegOpers;
       RegOpers.collect(MI, *TRI, MRI, TrackLaneMasks, false);
       if (TrackLaneMasks) {
