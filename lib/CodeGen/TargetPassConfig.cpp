@@ -35,7 +35,6 @@
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/SymbolRewriter.h"
-//#include "MachineOutliner.h" // FIXME: This should be somewhere sane
 
 using namespace llvm;
 
@@ -93,8 +92,6 @@ static cl::opt<bool> VerifyMachineCode("verify-machineinstrs", cl::Hidden,
     cl::desc("Verify generated machine code"),
     cl::init(false),
     cl::ZeroOrMore);
-static cl::opt<bool> EnableMIROutliner("enable-machine-outliner", cl::Hidden,
-    cl::desc("Enable machine outliner"));
 
 static cl::opt<std::string>
 PrintMachineInstrs("print-machineinstrs", cl::ValueOptional,
@@ -131,7 +128,7 @@ static cl::opt<CFLAAType> UseCFLAA(
                           "Enable unification-based CFL-AA"),
                clEnumValN(CFLAAType::Andersen, "anders",
                           "Enable inclusion-based CFL-AA"),
-               clEnumValN(CFLAAType::Both, "both",
+               clEnumValN(CFLAAType::Both, "both", 
                           "Enable both variants of CFL-AA")));
 
 /// Allow standard passes to be disabled by command line options. This supports
@@ -673,9 +670,6 @@ void TargetPassConfig::addMachinePasses() {
 
   addPass(&XRayInstrumentationID, false);
   addPass(&PatchableFunctionID, false);
-
-  if (EnableMIROutliner)
-    PM->add(createOutlinerPass());
 
   AddingMachinePasses = false;
 }
