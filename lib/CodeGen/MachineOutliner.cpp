@@ -66,7 +66,7 @@ size_t MachineOutliner::removeOutsideSameBB(
 
   // StringLocation: first = index of the string, second = index size_to that
   // string.
-  for (size_t i = 0; i < Occurrences.size(); i++) {
+  for (size_t i = 0, e = Occurrences.size(); i < e; i++) {
     auto StringLocation = SC.stringIndexContaining(Occurrences[i].second);
     if (StringLocation.second + Length - 1 >
         SC.stringAt(StringLocation.first).size()) {
@@ -225,7 +225,7 @@ bool MachineOutliner::outline(Module &M,
   bool OutlinedSomething = false;
   int Offset = 0;
 
-  for (size_t i = 0; i < FunctionList.size(); i++) {
+  for (size_t i = 0, e = FunctionList.size(); i < e; i++) {
     OutlinedFunction OF = FunctionList[i];
     FunctionList[i].MF = createOutlinedFunction(M, OF);
   }
