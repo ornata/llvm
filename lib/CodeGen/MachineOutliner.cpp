@@ -6,9 +6,10 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-//
-// Implementation of MachineOutliner.h
-//
+///
+/// \file
+/// Implementation of MachineOutliner.h
+///
 //===----------------------------------------------------------------------===//
 
 #include "MachineOutliner.h"
@@ -20,33 +21,31 @@ using namespace llvm;
 
 char MachineOutliner::ID = 0;
 
-/// Construct a proxy string for a MachineBasicBlock.
-void MachineOutliner::buildProxyString(ContainerType &Container,
+void MachineOutliner::buildProxyString(std::vector<unsigned> &Container,
                                        MachineBasicBlock *BB,
                                        const TargetRegisterInfo *TRI,
                                        const TargetInstrInfo *TII) {
   for (auto BBI = BB->instr_begin(), BBE = BB->instr_end(); BBI != BBE; BBI++) {
 
-    // First, check if the current instruction is legal to outline at all
+    // First, check if the current instruction is legal to outline at all.
     bool IsSafeToOutline = TII->isLegalToOutline(*BBI);
 
-    // If it's not, give it a bad number
+    // If it's not, give it a bad number.
     if (!IsSafeToOutline) {
       Container.push_back(CurrIllegalInstrMapping);
       CurrIllegalInstrMapping--;
     }
 
-    // If it is legal, we either insert it size_to the map, or get its existing
-    // Id
+    // It's safe to outline, so we should give it a legal integer. If it's in
+    // the map, then give it the previously assigned integer. Otherwise, give
+    // it the next available one.
     else {
       auto Mapping = InstructionIntegerMap.find(&*BBI);
 
-      // It was found in the map...
       if (Mapping != InstructionIntegerMap.end()) {
         Container.push_back(Mapping->second);
       }
 
-      // Otherwise, it wasn't there, so we should put it there!
       else {
         InstructionIntegerMap.insert(
             std::pair<MachineInstr *, int>(&*BBI, CurrLegalInstrMapping));
@@ -58,96 +57,100 @@ void MachineOutliner::buildProxyString(ContainerType &Container,
   }
 }
 
-/// Remove candidates which don't lie within the same MachineBasicBlock.
-size_t MachineOutliner::removeOutsideSameBB(
-    std::vector<std::pair<String *, size_t>> &Occurrences, const size_t &Length,
-    StringCollection &SC) {
-  size_t Removed = 0;
-
-  // StringLocation: first = index of the string, second = index size_to that
-  // string.
-  for (size_t i = 0, e = Occurrences.size(); i < e; i++) {
-    auto StringLocation = SC.stringIndexContaining(Occurrences[i].second);
-    if (StringLocation.second + Length - 1 >
-        SC.stringAt(StringLocation.first).size()) {
-      Occurrences.erase(Occurrences.begin() + i);
-      Removed++;
-    }
-  }
-
-  return Removed;
-}
-
-/// Find the potential outlining candidates for the program and return them in
-/// CandidateList.
 void MachineOutliner::buildCandidateList(
     std::vector<Candidate> &CandidateList,
     std::vector<OutlinedFunction> &FunctionList,
     std::vector<MachineBasicBlock *> &Worklist) {
 
+  // TODO: It would be better to use a "most beneficial substring" query if we
+  // decide to be a bit smarter and use a dynamic programming approximation
+  // scheme. For a naive greedy choice, LRS and MBS appear to be about as
+  // effective as each other. This is because both can knock out a candidate
+  // that would be better, or would lead to a better combination of candidates
+  // being chosen.
   String *CandidateString = ST->longestRepeatedSubstring();
 
-  // FIXME: That 2 should be a target-dependent minimum length.
-  if (CandidateString != nullptr && CandidateString->length() >= 2) {
+  assert(CandidateString && "no candidate");
+
+  // FIXME: Use the following cost model.
+  // Weight = Occurrences * length
+  // Benefit = Weight - [Len(outline prologue) + Len(outline epilogue) +
+  // Len(functon call)]
+  //
+  // TODO: Experiment with dynamic programming-based approximation scheme. If it
+  // isn't too memory intensive, we really ought to switch to it.
+  if (CandidateString != nullptr && CandidateString->size() >= 2) {
     size_t FunctionsCreated = 0;
-    StringCollection SC = ST->SC;
+    StringCollection SC = ST->InputString;
     std::vector<std::pair<String *, size_t>> *Occurrences =
-        ST->findOccurrences(*CandidateString);
+        ST->findOccurrencesAndPrune(*CandidateString);
 
     // Query the tree for candidates until we run out of candidates to outline.
     do {
       assert(Occurrences != nullptr &&
              "Null occurrences for longestRepeatedSubstring!");
-      removeOutsideSameBB(*Occurrences, CandidateString->length(), SC);
 
       // If there are at least two occurrences of this candidate, then we should
       // make it a function and keep track of it.
       if (Occurrences->size() >= 2) {
-        auto FirstOcc = (*Occurrences)[0];
-        size_t IdxInSC = FirstOcc.second;
-        auto StringLocation = ST->SC.stringIndexContaining(IdxInSC);
-        size_t StartIdxInBB = StringLocation.second;
-        size_t EndIdxInBB = StartIdxInBB + CandidateString->length() - 1;
-        MachineBasicBlock *OccBB = Worklist[StringLocation.first];
-        MachineFunction *BBParent = OccBB->getParent();
+        std::pair<String *, size_t> FirstOcc = (*Occurrences)[0];
 
-        FunctionList.push_back(OutlinedFunction(
-            OccBB, BBParent, IdxInSC, CandidateString->length() - 1,
-            StartIdxInBB, EndIdxInBB, FunctionsCreated, CurrentFunctionID,
-            Occurrences->size()));
+        // The index of the first character of the candidate in the 2D string.
+        size_t IndexIn2DString = FirstOcc.second;
+
+        // Use that to find the index of the string/MachineBasicBlock it appears
+        // in and the point that it begins in in that string/MBB.
+        std::pair<size_t, size_t> FirstIndexAndOffset =
+            getStringIndexAndOffset(SC, IndexIn2DString);
+
+        // From there, we can tell where the string starts and ends in the first
+        // occurrence so that we can copy it over.
+        size_t StartIdxInBB = FirstIndexAndOffset.second;
+        size_t EndIdxInBB = StartIdxInBB + CandidateString->size() - 1;
+
+        // Keep track of the MachineBasicBlock and its parent so that we can
+        // copy from it later.
+        MachineBasicBlock *OccBB = Worklist[FirstIndexAndOffset.first];
+
+        FunctionList.push_back(
+            OutlinedFunction(OccBB, StartIdxInBB, EndIdxInBB, FunctionsCreated,
+                             CurrentFunctionID, Occurrences->size()));
 
         // Save each of the occurrences for the outlining process.
-        for (auto &Occ : *Occurrences)
+        for (auto &Occ : *Occurrences) {
+          std::pair<size_t, size_t> IndexAndOffset =
+              getStringIndexAndOffset(SC, Occ.second);
           CandidateList.push_back(Candidate(
-              OccBB, BBParent, CandidateString, CandidateString->length(),
-              Occ.second, Occ.second + CandidateString->length(),
-              FunctionsCreated));
+              IndexAndOffset.first, // Idx of MBB containing candidate.
+              IndexAndOffset.second,   // Starting idx in that MBB.
+              CandidateString->size(), // Length of the candidate.
+              Occ.second,              // Start index in the full string.
+              FunctionsCreated, // Index of the corresponding OutlinedFunction.
+              CandidateString // The actual string.
+              )
+          );
+        }
 
         CurrentFunctionID++;
-        FunctionsCreated++;
         FunctionsCreatedStat++;
       }
 
       // Find the next candidate and continue the process.
       CandidateString = ST->longestRepeatedSubstring();
-    } while (CandidateString && CandidateString->length() >= 2 &&
-             (Occurrences = ST->findOccurrences(*CandidateString)));
+    } while (CandidateString && CandidateString->size() >= 2 &&
+             (Occurrences = ST->findOccurrencesAndPrune(*CandidateString)));
 
+    // Sort the candidates in decending order. This will simplify the outlining
+    // process when we have to remove the candidates from the string by
+    // allowing us to cut them out without keeping track of an offset.
     std::sort(CandidateList.begin(), CandidateList.end());
-
-    DEBUG(for (size_t i = 0, e = CandidateList.size(); i < e; i++) {
-      dbgs() << "Candidate " << i << ": \n";
-      dbgs() << CandidateList[i] << "\n";
-    });
   }
 }
 
-/// Create a new Function and MachineFunction for the OutlinedFunction OF. Place
-/// that function in M.
 MachineFunction *
 MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 
-  // Create the function name and store it size_to the function list.
+  // Create the function name and store it in the list of function names.
   std::ostringstream NameStream;
   NameStream << "OUTLINED_FUNCTION" << OF.Name;
   std::string *Name = new std::string(NameStream.str());
@@ -158,6 +161,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   Function *F = dyn_cast<Function>(
       M.getOrInsertFunction(Name->c_str(), Type::getVoidTy(C), NULL));
   assert(F != nullptr);
+
   F->setLinkage(GlobalValue::PrivateLinkage);
 
   BasicBlock *EntryBB = BasicBlock::Create(C, "entry", F);
@@ -174,27 +178,17 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   DEBUG(dbgs() << "OF.StartIdxInBB = " << OF.StartIdxInBB << "\n";
         dbgs() << "OF.EndIdxInBB = " << OF.EndIdxInBB << "\n";);
 
-  size_t i;
   auto StartIt = OF.OccBB->instr_begin();
-
-  for (i = 0; i < OF.StartIdxInBB; i++)
-    ++StartIt;
-
   auto EndIt = StartIt;
+  std::advance(StartIt, OF.StartIdxInBB);
+  std::advance(EndIt, OF.EndIdxInBB);
 
-  for (; i < OF.EndIdxInBB; ++i)
-    ++EndIt;
-
-  /// Insert the instructions from the candidate size_to the function, along
-  /// with
-  /// the special epilogue and prologue for the outliner.
+  // Insert instructions into the function and a custom outlined
+  // prologue/epilogue.
   MF.insert(MF.begin(), MBB);
   TII->insertOutlinerEpilog(MBB, MF);
 
   MachineInstr *MI;
-
-  // Clone each machine instruction in the outlined range and insert them before
-  // the inserted epilogue.
   while (EndIt != StartIt) {
     MI = MF.CloneMachineInstr(&*EndIt);
     MI->dropMemRefs();
@@ -215,38 +209,43 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   return &MF;
 }
 
-/// Find outlining candidates, create functions from them, and replace them with
-/// function calls.
 bool MachineOutliner::outline(Module &M,
                               std::vector<MachineBasicBlock *> &Worklist,
                               std::vector<Candidate> &CandidateList,
                               std::vector<OutlinedFunction> &FunctionList) {
-  StringCollection SC = ST->SC;
+  StringCollection SC = ST->InputString;
   bool OutlinedSomething = false;
-  int Offset = 0;
 
+  // Create an outlined function for each candidate.
   for (size_t i = 0, e = FunctionList.size(); i < e; i++) {
     OutlinedFunction OF = FunctionList[i];
     FunctionList[i].MF = createOutlinedFunction(M, OF);
   }
 
-  /// Replace the candidates with calls to their respective outlined functions.
+  // Replace the candidates with calls to their respective outlined functions.
+  //
+  // FIXME: Change the suffix tree pruning technique so that it follows the
+  // *longest* path on each internal node which *contains the node* that we're
+  // invalidating stuff *for*. This will allow us to catch cases like this:
+  // Outline "123", Outline "112". This method would make this unnecessary.
+  //
+  // FIXME: Currently, this method can allow us to unnecessarily outline stuff.
+  // This should be done *before* we create the outlined functions.
   for (const Candidate &C : CandidateList) {
-    size_t OffsetedStringStart = C.StartIdxInBB + Offset;
-    size_t OffsetedStringEnd = OffsetedStringStart + C.Length;
 
-    /// If this spot doesn't match with our string, we must have already
-    /// outlined something from here. Therefore, we should skip it to avoid
-    /// overlaps.
+    size_t StartIndex = C.BBOffset;
+    size_t EndIndex = StartIndex + C.Length;
 
-    // If the offsetted string starts below index 0, we must have overlapped
-    // something
-    bool AlreadyOutlinedFrom = (OffsetedStringStart > OffsetedStringEnd);
+    // If the index is below 0, then we must have already outlined from it.
+    bool AlreadyOutlinedFrom = EndIndex - StartIndex > C.Length;
 
+    // Check if we have any different characters in the string collection versus
+    // the string we want to outline. If so, then we must have already outlined
+    // from the spot this candidate appeared at.
     if (!AlreadyOutlinedFrom) {
       size_t j = 0;
-      for (size_t i = OffsetedStringStart; i < OffsetedStringEnd; i++) {
-        if (SC[i] != (*(C.Str))[j]) {
+      for (size_t i = StartIndex; i < EndIndex; i++) {
+        if ((*SC[C.BBIndex])[i] != (*(C.Str))[j]) {
           FunctionList[C.FunctionIdx].OccurrenceCount--;
           AlreadyOutlinedFrom = true;
           break;
@@ -255,68 +254,69 @@ bool MachineOutliner::outline(Module &M,
       }
     }
 
+    // If we've outlined from this spot, or we don't have enough occurrences to
+    // justify outlining stuff, then skip this candidate.
     if (AlreadyOutlinedFrom || FunctionList[C.FunctionIdx].OccurrenceCount < 2)
       continue;
 
-    /// We have a candidate which doesn't conflict with any other candidates, so
-    /// we can go ahead and outline it.
+    // We have a candidate which doesn't conflict with any other candidates, so
+    // we can go ahead and outline it.
     OutlinedSomething = true;
-    auto StringLocation = SC.stringIndexContaining(OffsetedStringStart);
     NumOutlinedStat++;
 
-    /// Update the proxy string.
-    SC.insertBefore(OffsetedStringStart, FunctionList[C.FunctionIdx].Id);
+    // Remove the candidate from the string in the suffix tree first, and
+    // replace it with the associated function's id.
+    auto Begin = SC[C.BBIndex]->begin() + C.BBOffset;
+    auto End = Begin + C.Length;
 
-    SC.erase(OffsetedStringStart + 1, OffsetedStringEnd + 1);
+    SC[C.BBIndex]->erase(Begin, End);
+    SC[C.BBIndex]->insert(Begin, FunctionList[C.FunctionIdx].Id);
 
-    /// Update the module.
+    // Now outline the function in the module using the same idea.
     MachineFunction *MF = FunctionList[C.FunctionIdx].MF;
-    MachineBasicBlock *MBB = Worklist[StringLocation.first];
+    MachineBasicBlock *MBB = Worklist[C.BBIndex];
     const TargetSubtargetInfo *target = &(MF->getSubtarget());
     const TargetInstrInfo *TII = target->getInstrInfo();
-
-    /// Get the name of the function we want to insert a call to.
     MCContext &Ctx = MF->getContext();
-    Twine size_ternalName = Twine("l_", MF->getName());
-    MCSymbol *Name = Ctx.getOrCreateSymbol(size_ternalName);
 
-    /// Find the start of the candidate's range, insert the call before it, and
-    /// then delete the range.
-    size_t i;
+    // We need the function name to match up with the internal symbol
+    // build for it. There's no nice way to do this, so we'll just stick
+    // an l_ in front of it manually.
+    Twine InternalName = Twine("l_", MF->getName());
+    MCSymbol *Name = Ctx.getOrCreateSymbol(InternalName);
+
+    // Now, insert the function name and delete the instructions we don't need.
     auto It = MBB->instr_begin();
     auto StartIt = It;
     auto EndIt = It;
 
-    for (i = 0; i < StringLocation.second; ++i) {
-      ++StartIt;
-      ++It;
-    }
-
+    std::advance(StartIt, StartIndex);
+    std::advance(EndIt, EndIndex);
     StartIt = TII->insertOutlinedCall(MBB, StartIt, MF, Name);
-    ++Offset; // Inserted one character => everything shifts right by 1.
     ++StartIt;
-
-    for (; i < StringLocation.second + C.Length; ++i)
-      ++It;
-
-    EndIt = It;
-
     MBB->erase(StartIt, EndIt);
-    Offset -= C.Length;
   }
 
   return OutlinedSomething;
 }
 
-/// Construct the suffix tree for the program and run the outlining algorithm.
 bool MachineOutliner::runOnModule(Module &M) {
   MachineModuleInfo &MMI = getAnalysis<MachineModuleInfo>();
+
   std::vector<MachineBasicBlock *> Worklist;
 
+  // The current number we'll assign to instructions we ought not to outline.
   CurrIllegalInstrMapping = -1;
-  CurrLegalInstrMapping = 0;
 
-  // Set up the suffix tree.
+  // The current number we'll assign to instructions we want to outline.
+  CurrLegalInstrMapping = 0;
+  std::vector<std::vector<unsigned> *> Collection;
+
+  // Set up the suffix tree by creating strings for each basic block.
+  // Note: This means that the i-th string and the i-th MachineBasicBlock
+  // in the work list correspond to each other. It also means that the
+  // j-th character in that string and the j-th instruction in that
+  // MBB correspond with each other.
   for (auto MI = M.begin(), ME = M.end(); MI != ME; MI++) {
     Function *F = &*MI;
     MachineFunction &MF = MMI.getMachineFunction(*F);
@@ -330,12 +330,15 @@ bool MachineOutliner::runOnModule(Module &M) {
     for (auto MFI = MF.begin(), MFE = MF.end(); MFI != MFE; ++MFI) {
       MachineBasicBlock *MBB = &*MFI;
       Worklist.push_back(MBB);
-      ContainerType Container;
+      std::vector<unsigned> Container;
       buildProxyString(Container, MBB, TRI, TII);
       String *BBString = new String(Container);
-      ST->append(BBString);
+      Collection.push_back(BBString);
     }
   }
+
+  ST = new SuffixTree(Collection);
+
   // Find all of the candidates for outlining.
   bool OutlinedSomething = false;
   std::vector<Candidate> CandidateList;
@@ -346,5 +349,9 @@ bool MachineOutliner::runOnModule(Module &M) {
   OutlinedSomething = outline(M, Worklist, CandidateList, FunctionList);
 
   delete ST;
+
+  for (size_t i = 0, e = Collection.size(); i != e; i++)
+    delete Collection[i];
+
   return OutlinedSomething;
 }
