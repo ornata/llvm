@@ -61,9 +61,6 @@ set(ADTSources
   TripleTest.cpp
   TwineTest.cpp
   VariadicFunctionTest.cpp
-  TerminatedStringTest.cpp
-  TerminatedStringListTest.cpp
-  SuffixTreeTest.cpp
  )
 
 add_llvm_unittest(ADTTests
