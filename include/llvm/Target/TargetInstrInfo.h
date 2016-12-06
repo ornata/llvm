@@ -1515,7 +1515,6 @@ private:
   unsigned CatchRetOpcode;
   unsigned ReturnOpcode;
 
-
   public:
 
   /// Return true if the instruction is legal to outline.
