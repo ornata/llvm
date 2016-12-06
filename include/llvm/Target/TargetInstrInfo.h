@@ -1517,13 +1517,14 @@ private:
 
 
   public:
-  /// isLegalToOutline - Return true if the instruction is legal to outline.
+
+  /// Return true if the instruction is legal to outline.
   virtual bool isLegalToOutline(const MachineInstr &MI) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::isLegalToOutline!");
   }
 
-  /// insertOutlinerEpilog - Insert a custom epilogue for outlined functions.
+  /// Insert a custom epilogue for outlined functions.
   /// This may be empty, in which case no epilogue or return statement will be
   /// emitted.
   virtual void insertOutlinerEpilog(MachineBasicBlock *MBB,
@@ -1531,27 +1532,27 @@ private:
     return;
   }
 
-  /// insertOutlinedCall - Insert a call to an outlined function into the
-  /// program. Returns an iterator to the spot where we inserted the call. This
-  /// must be implemented
-  /// by the target.
+  /// Insert a call to an outlined function into the program.
+  /// Returns an iterator to the spot where we inserted the call. This must be
+  /// implemented by the target.
   virtual MachineBasicBlock::instr_iterator
   insertOutlinedCall(MachineBasicBlock *MBB,
-                     MachineBasicBlock::instr_iterator &It, MachineFunction *MF,
+                     MachineBasicBlock::instr_iterator &It,
+                     MachineFunction *MF,
                      MCSymbol *Name) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinedCall!");
   }
 
-  /// insertOutlinerProlog - Insert a custom prologue for outlined functions.
+  /// Insert a custom prologue for outlined functions.
   /// This may be empty, in which case no prologue will be emitted.
   virtual void insertOutlinerProlog(MachineBasicBlock *MBB,
                                     MachineFunction &MF) const {
     return;
   }
 
-  /// functionIsSafeToOutlineFrom - Return true if the function can safely be
-  /// outlined from. By default, this means that the function has no red zone.
+  /// Return true if the function can safely be outlined from.
+  /// By default, this means that the function has no red zone.
   virtual bool functionIsSafeToOutlineFrom(Function &F) const {
     return F.hasFnAttribute(Attribute::NoRedZone);
   }

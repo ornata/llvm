@@ -583,16 +583,17 @@ private:
   bool isFrameOperand(const MachineInstr &MI, unsigned int Op,
                       int &FrameIndex) const;
 
-
-  //// Outliner stuff.
 public:
   bool isLegalToOutline(const MachineInstr &MI) const override;
+
   void insertOutlinerEpilog(MachineBasicBlock *MBB,
                             MachineFunction &MF) const override;
   MachineBasicBlock::instr_iterator
+
   insertOutlinedCall(MachineBasicBlock *MBB,
                      MachineBasicBlock::instr_iterator &It, MachineFunction *MF,
                      MCSymbol *Name) const override;
+
   /// Returns true iff the routine could find two commutable operands in the
   /// given machine instruction with 3 vector inputs.
   /// The 'SrcOpIdx1' and 'SrcOpIdx2' are INPUT and OUTPUT arguments. Their

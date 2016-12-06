@@ -9602,7 +9602,6 @@ char LDTLSCleanup::ID = 0;
 FunctionPass*
 llvm::createCleanupLocalDynamicTLSPass() { return new LDTLSCleanup(); }
 
-//// Outliner junk
 bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
   int Dummy;
 
@@ -9637,8 +9636,6 @@ bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
   else if (MI.isLabel())
     return false;
 
-  // Check if the outliner has any CPI junk-- we can't move around stuff
-  // which depends on the offsets between two instructions
   else {
     for (auto It = MI.operands_begin(), Et = MI.operands_end(); It != Et;
          It++) {
