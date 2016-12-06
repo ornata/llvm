@@ -296,8 +296,6 @@ public:
   static char ID;
   FreeMachineFunction() : FunctionPass(ID) {}
 
-  StringRef getPassName() const override { return "FreeMachineFunction"; }
-
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MachineModuleInfo>();
     AU.addPreserved<MachineModuleInfo>();
