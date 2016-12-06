@@ -37,7 +37,8 @@ let SubtargetPredicate = isGCN in {
 // EXP Instructions
 //===----------------------------------------------------------------------===//
 
-defm EXP : EXP_m;
+defm EXP : EXP_m<0, AMDGPUexport>;
+defm EXP_DONE : EXP_m<1, AMDGPUexport_done>;
 
 //===----------------------------------------------------------------------===//
 // VINTRP Instructions
@@ -52,7 +53,7 @@ multiclass V_INTERP_P1_F32_m : VINTRP_m <
   (outs VGPR_32:$dst),
   (ins VGPR_32:$i, i32imm:$attr_chan, i32imm:$attr),
   "v_interp_p1_f32 $dst, $i, $attr_chan, $attr, [m0]",
-  [(set f32:$dst, (AMDGPUinterp_p1 i32:$i, (i32 imm:$attr_chan),
+  [(set f32:$dst, (AMDGPUinterp_p1 f32:$i, (i32 imm:$attr_chan),
                                            (i32 imm:$attr)))]
 >;
 
@@ -75,7 +76,7 @@ defm V_INTERP_P2_F32 : VINTRP_m <
   (outs VGPR_32:$dst),
   (ins VGPR_32:$src0, VGPR_32:$j, i32imm:$attr_chan, i32imm:$attr),
   "v_interp_p2_f32 $dst, [$src0], $j, $attr_chan, $attr, [m0]",
-  [(set f32:$dst, (AMDGPUinterp_p2 f32:$src0, i32:$j, (i32 imm:$attr_chan),
+  [(set f32:$dst, (AMDGPUinterp_p2 f32:$src0, f32:$j, (i32 imm:$attr_chan),
                                                      (i32 imm:$attr)))]>;
 
 } // End DisableEncoding = "$src0", Constraints = "$src0 = $dst"
@@ -386,13 +387,6 @@ def : Pat<
 def : Pat <
   (int_AMDGPU_kilp),
   (SI_KILL (i32 0xbf800000))
->;
-
-def : Pat <
-  (int_SI_export imm:$en, imm:$vm, imm:$done, imm:$tgt, imm:$compr,
-                 f32:$src0, f32:$src1, f32:$src2, f32:$src3),
-  (EXP imm:$en, imm:$tgt, imm:$compr, imm:$done, imm:$vm,
-       $src0, $src1, $src2, $src3)
 >;
 
 //===----------------------------------------------------------------------===//
@@ -799,7 +793,7 @@ defm : BFIPatterns <V_BFI_B32, S_MOV_B32, SReg_64>;
 def : ROTRPattern <V_ALIGNBIT_B32>;
 
 /********** ====================== **********/
-/**********   Indirect adressing   **********/
+/**********   Indirect addressing  **********/
 /********** ====================== **********/
 
 multiclass SI_INDIRECT_Pattern <ValueType vt, ValueType eltvt, string VecSize> {
@@ -926,7 +920,7 @@ def : FPToI1Pat<V_CMP_EQ_F64_e64, CONST.FP64_NEG_ONE, i64, f64, fp_to_sint>;
 
 // If we need to perform a logical operation on i1 values, we need to
 // use vector comparisons since there is only one SCC register. Vector
-// comparisions still write to a pair of SGPRs, so treat these as
+// comparisons still write to a pair of SGPRs, so treat these as
 // 64-bit comparisons. When legalizing SGPR copies, instructions
 // resulting in the copies from SCC to these instructions will be
 // moved to the VALU.
