@@ -1518,7 +1518,7 @@ private:
   public:
 
   /// Return true if the instruction is legal to outline.
-  virtual bool isLegalToOutline(const MachineInstr &MI) const {
+  virtual bool isLegalToOutline(MachineInstr &MI) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::isLegalToOutline!");
   }
@@ -1526,34 +1526,40 @@ private:
   /// Insert a custom epilogue for outlined functions.
   /// This may be empty, in which case no epilogue or return statement will be
   /// emitted.
-  virtual void insertOutlinerEpilog(MachineBasicBlock *MBB,
+  virtual void insertOutlinerEpilog(MachineBasicBlock &MBB,
                                     MachineFunction &MF) const {
-    return;
+    llvm_unreachable(
+        "Target didn't implement TargetInstrInfo::insertOutlinerEpilog!");
   }
 
   /// Insert a call to an outlined function into the program.
   /// Returns an iterator to the spot where we inserted the call. This must be
   /// implemented by the target.
-  virtual MachineBasicBlock::instr_iterator
-  insertOutlinedCall(MachineBasicBlock *MBB,
-                     MachineBasicBlock::instr_iterator &It,
-                     MachineFunction *MF,
+  virtual MachineBasicBlock::iterator
+  insertOutlinedCall(MachineBasicBlock &MBB,
+                     MachineBasicBlock::iterator &It,
+                     MachineFunction &MF,
                      MCSymbol *Name) const {
     llvm_unreachable(
-        "Target didn't implement TargetInstrInfo::insertOutlinedCall!");
+        "Target didn't implement TargetInstrInfo::insertOutlinedCall!"
+        );
   }
 
   /// Insert a custom prologue for outlined functions.
   /// This may be empty, in which case no prologue will be emitted.
-  virtual void insertOutlinerProlog(MachineBasicBlock *MBB,
+  virtual void insertOutlinerProlog(MachineBasicBlock &MBB,
                                     MachineFunction &MF) const {
-    return;
+    llvm_unreachable(
+        "Target didn't implement TargetInstrInfo::insertOutlinerProlog!"
+        );
   }
 
   /// Return true if the function can safely be outlined from.
   /// By default, this means that the function has no red zone.
   virtual bool functionIsSafeToOutlineFrom(Function &F) const {
-    return F.hasFnAttribute(Attribute::NoRedZone);
+    llvm_unreachable(
+        "Target didn't implement TargetInstrInfo::functionIsSafeToOutlineFrom!"
+        );
   }
 };
 

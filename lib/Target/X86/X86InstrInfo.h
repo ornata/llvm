@@ -584,14 +584,19 @@ private:
                       int &FrameIndex) const;
 
 public:
-  bool isLegalToOutline(const MachineInstr &MI) const override;
+  bool functionIsSafeToOutlineFrom(Function &F) const override;
 
-  void insertOutlinerEpilog(MachineBasicBlock *MBB,
+  bool isLegalToOutline(MachineInstr &MI) const override;
+
+  void insertOutlinerEpilog(MachineBasicBlock &MBB,
                             MachineFunction &MF) const override;
-  MachineBasicBlock::instr_iterator
 
-  insertOutlinedCall(MachineBasicBlock *MBB,
-                     MachineBasicBlock::instr_iterator &It, MachineFunction *MF,
+  void insertOutlinerProlog(MachineBasicBlock &MBB,
+                            MachineFunction &MF) const override;
+
+  MachineBasicBlock::iterator
+  insertOutlinedCall(MachineBasicBlock &MBB,
+                     MachineBasicBlock::iterator &It, MachineFunction &MF,
                      MCSymbol *Name) const override;
 
   /// Returns true iff the routine could find two commutable operands in the

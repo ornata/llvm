@@ -16,9 +16,6 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIB_CODEGEN_MACHINEOUTLINER_H
-#define LLVM_LIB_CODEGEN_MACHINEOUTLINER_H
-
 #define DEBUG_TYPE "machine-outliner"
 
 #include "llvm/ADT/Statistic.h"
@@ -38,8 +35,6 @@
 #include <map>
 #include <sstream>
 #include <vector>
-
-namespace {
 
 // In the outliner, we store a "string" for each MachineBasicBlock in the
 // program. Each string consists of integers. Each integer is either the
@@ -666,16 +661,15 @@ public:
       deleteSuffixTreeNode(Root);
   }
 };
-}
 
-/// An individual string of instructions to be replaced with a call to an
-/// outlined function.
+/// \brief An individual string of instructions to be replaced with a call
+/// to an outlined function.
 struct Candidate {
-  /// The index of the \p MachineBasicBlock in the worklist containing
+  /// \brief The index of the \p MachineBasicBlock in the worklist containing
   /// the first occurrence of this \p Candidate.
   size_t BBIndex;
 
-  /// The start index of this candidate in its containing \p String and
+  /// \brief The start index of this candidate in its containing \p String and
   /// \p MachineBasicBlock.
   size_t BBOffset;
 
@@ -691,9 +685,7 @@ struct Candidate {
 
   /// The \p String that will be outlined.
   /// Stored to ensure that we don't have any overlaps.
-  // FIXME: This doesn't have to be stored if we use the improved pruning method
-  // described in MachineOutliner.cpp.
-  String *Str;
+  String *Str; // FIXME: This doesn't have to be stored
 
   Candidate(size_t BBIndex_, size_t BBOffset_, size_t Length_,
             size_t StartIdxIn2DString_, size_t FunctionIdx_, String *Str_)
@@ -710,12 +702,12 @@ struct Candidate {
 
 /// Stores information about an actual outlined function.
 struct OutlinedFunction {
-  /// The actual outlined function created. This is initialized after we go
-  /// through and create the actual function.
+  /// The actual outlined function created.
+  /// This is initialized after we go through and create the actual function.
   llvm::MachineFunction *MF;
 
-  /// The MachineBasicBlock containing the first occurrence of the string
-  /// associated with this function.
+  /// \brief The MachineBasicBlock containing the first occurrence of the
+  /// string associated with this function.
   llvm::MachineBasicBlock *OccBB;
 
   /// The start index of the instructions to outline in \p OccBB.
@@ -742,8 +734,8 @@ struct OutlinedFunction {
 
 namespace llvm {
 
-/// An interprocedural pass which finds repeated sequences of instructions and
-/// replaces them with calls to functions.
+/// \brief An interprocedural pass which finds repeated sequences of
+/// instructions and replaces them with calls to functions.
 ///
 /// Each instruction is mapped to an unsigned integer and placed in a string.
 /// The resulting string is then placed in a \p SuffixTree. The \p SuffixTree
@@ -754,8 +746,8 @@ namespace llvm {
 struct MachineOutliner : public ModulePass {
   static char ID;
 
-  /// Used to either hash functions or mark them as illegal to outline depending
-  /// on the instruction.
+  /// \brief Used to either hash functions or mark them as illegal to outline
+  /// depending on the instruction.
   DenseMap<MachineInstr *, unsigned, MachineInstrExpressionTrait>
       InstructionIntegerMap;
 
@@ -771,9 +763,7 @@ struct MachineOutliner : public ModulePass {
   /// The ID of the last function created.
   size_t CurrentFunctionID;
 
-  /// The names of each function created. These need to be kept around to make
-  /// the ASMPrinter happy.
-  // FIXME: Release function names after printing assembly.
+  /// The names of each function created. 
   std::vector<std::string *> *FunctionNames;
 
   StringRef getPassName() const override { return "Outliner"; }
@@ -808,9 +798,9 @@ struct MachineOutliner : public ModulePass {
                         const TargetRegisterInfo *TRI,
                         const TargetInstrInfo *TII);
 
-  /// Replace the sequences of instructions represented by the \p Candidates in
-  /// \p CandidateList with calls to \p MachineFunctions described in
-  /// \p FunctionList.
+  /// \brief Replace the sequences of instructions represented by the
+  /// \p Candidates in \p CandidateList with calls to \p MachineFunctions
+  /// described in \p FunctionList.
   ///
   /// \param Worklist The basic blocks in the program in order of appearance.
   /// \param CandidateList A list of candidates to be outlined from the program.
@@ -854,7 +844,4 @@ ModulePass *createOutlinerPass() {
   OutlinerFunctionNames = OL->FunctionNames;
   return OL;
 }
-
-} // LLVM namespace
-
-#endif // LLVM_LIB_CODEGEN_MACHINEOUTLINER_H
+}

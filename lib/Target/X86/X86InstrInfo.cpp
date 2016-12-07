@@ -9594,7 +9594,11 @@ char LDTLSCleanup::ID = 0;
 FunctionPass*
 llvm::createCleanupLocalDynamicTLSPass() { return new LDTLSCleanup(); }
 
-bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
+bool X86InstrInfo::functionIsSafeToOutlineFrom(Function &F) const {
+  return F.hasFnAttribute(Attribute::NoRedZone);
+}
+
+bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
   int Dummy;
 
   // Don't outline returns or basic block terminators.
@@ -9602,56 +9606,56 @@ bool X86InstrInfo::isLegalToOutline(const MachineInstr &MI) const {
     return false;
 
   // Don't outline anything that modifies or reads from the stack pointer.
-  else if (MI.modifiesRegister(X86::RSP, &RI) ||
-           MI.readsRegister(X86::RSP, &RI))
+  if (MI.modifiesRegister(X86::RSP, &RI) ||
+      MI.readsRegister(X86::RSP, &RI))
     return false;
 
-  else if (MI.modifiesRegister(X86::RIP, &RI) ||
-           MI.readsRegister(X86::RIP, &RI))
+  if (MI.modifiesRegister(X86::RIP, &RI) ||
+      MI.readsRegister(X86::RIP, &RI))
     return false;
 
   // Don't outline the frame setup or destroy for a function
-  else if (MI.getFlag(MachineInstr::MIFlag::FrameSetup) ||
-           MI.getFlag(MachineInstr::MIFlag::FrameDestroy))
+  if (MI.getFlag(MachineInstr::MIFlag::FrameSetup) ||
+      MI.getFlag(MachineInstr::MIFlag::FrameDestroy))
     return false;
 
-  else if (MI.isCFIInstruction())
+  if (MI.isCFIInstruction())
     return false;
 
-  else if (isLoadFromStackSlot(MI, Dummy) || isStoreToStackSlot(MI, Dummy))
+  if (isLoadFromStackSlot(MI, Dummy) || isStoreToStackSlot(MI, Dummy))
     return false;
 
-  else if (isLoadFromStackSlotPostFE(MI, Dummy) ||
-           isStoreToStackSlotPostFE(MI, Dummy))
+  if (isLoadFromStackSlotPostFE(MI, Dummy) ||
+      isStoreToStackSlotPostFE(MI, Dummy))
     return false;
 
-  else if (MI.isLabel())
+  if (MI.isLabel())
     return false;
 
-  else {
-    for (auto It = MI.operands_begin(), Et = MI.operands_end(); It != Et;
-         It++) {
-      if ((*It).isCPI() || (*It).isJTI() || (*It).isCFIIndex() ||
-          (*It).isFI() || (*It).isTargetIndex()) {
+  for (MachineOperand MOP : MI.operands())
+    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || 
+        MOP.isFI() || MOP.isTargetIndex())
         return false;
-      }
-    }
-  }
 
   return true;
 }
 
-void X86InstrInfo::insertOutlinerEpilog(MachineBasicBlock *MBB,
+void X86InstrInfo::insertOutlinerEpilog(MachineBasicBlock &MBB,
                                         MachineFunction &MF) const {
   MachineInstr *retq = BuildMI(MF, DebugLoc(), get(X86::RETQ));
-  MBB->insert(MBB->instr_begin(), retq);
+  MBB.insert(MBB.begin(), retq);
 }
 
-MachineBasicBlock::instr_iterator
-X86InstrInfo::insertOutlinedCall(MachineBasicBlock *MBB,
-                                 MachineBasicBlock::instr_iterator &It,
-                                 MachineFunction *MF, MCSymbol *Name) const {
-  It = MBB->insert(
-      It, BuildMI(*MF, DebugLoc(), get(X86::CALL64pcrel32)).addSym(Name));
+void X86InstrInfo::insertOutlinerProlog(MachineBasicBlock &MBB,
+                                        MachineFunction &MF) const {
+  return;
+}
+
+MachineBasicBlock::iterator
+X86InstrInfo::insertOutlinedCall(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator &It,
+                                 MachineFunction &MF, MCSymbol *Name) const {
+  It = MBB.insert(
+      It, BuildMI(MF, DebugLoc(), get(X86::CALL64pcrel32)).addSym(Name));
   return It;
 }
