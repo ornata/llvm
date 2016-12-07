@@ -18,11 +18,10 @@
 #include "ARMRegisterInfo.h"
 
 namespace llvm {
-class ARMSubtarget;
+  class ARMSubtarget;
 
 class ARMInstrInfo : public ARMBaseInstrInfo {
   ARMRegisterInfo RI;
-
 public:
   explicit ARMInstrInfo(const ARMSubtarget &STI);
 
@@ -41,19 +40,8 @@ public:
 
 private:
   void expandLoadStackGuard(MachineBasicBlock::iterator MI) const override;
-
-  //// Outliner stuff.
-public:
-  bool isLegalToOutline(const MachineInstr &MI) const override;
-  void insertOutlinerEpilog(MachineBasicBlock *MBB,
-                            MachineFunction &MF) const override;
-  void insertOutlinerProlog(MachineBasicBlock *MBB,
-                            MachineFunction &MF) const override;
-  MachineBasicBlock::instr_iterator
-  insertOutlinedCall(MachineBasicBlock *MBB,
-                     MachineBasicBlock::instr_iterator &It, MachineFunction *MF,
-                     MCSymbol *Name) const override;
 };
+
 }
 
 #endif
