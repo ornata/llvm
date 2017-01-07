@@ -9652,10 +9652,11 @@ void X86InstrInfo::insertOutlinerProlog(MachineBasicBlock &MBB,
 }
 
 MachineBasicBlock::iterator
-X86InstrInfo::insertOutlinedCall(MachineBasicBlock &MBB,
+X86InstrInfo::insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator &It,
-                                 MachineFunction &MF, MCSymbol *Name) const {
-  It = MBB.insert(
-      It, BuildMI(MF, DebugLoc(), get(X86::CALL64pcrel32)).addSym(Name));
+                                 MachineFunction &MF) const {
+  It = MBB.insert(It,
+                  BuildMI(MF, DebugLoc(), get(X86::CALL64pcrel32))
+                      .addGlobalAddress(M.getNamedValue(MF.getName())));
   return It;
 }
