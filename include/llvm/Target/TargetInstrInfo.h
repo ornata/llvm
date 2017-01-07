@@ -1536,10 +1536,10 @@ private:
   /// Returns an iterator to the spot where we inserted the call. This must be
   /// implemented by the target.
   virtual MachineBasicBlock::iterator
-  insertOutlinedCall(MachineBasicBlock &MBB,
+  insertOutlinedCall(Module &M,
+                     MachineBasicBlock &MBB,
                      MachineBasicBlock::iterator &It,
-                     MachineFunction &MF,
-                     MCSymbol *Name) const {
+                     MachineFunction &MF) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinedCall!"
         );
