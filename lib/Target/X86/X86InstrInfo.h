@@ -595,9 +595,10 @@ public:
                             MachineFunction &MF) const override;
 
   MachineBasicBlock::iterator
-  insertOutlinedCall(MachineBasicBlock &MBB,
-                     MachineBasicBlock::iterator &It, MachineFunction &MF,
-                     MCSymbol *Name) const override;
+  insertOutlinedCall(Module &M,
+                     MachineBasicBlock &MBB,
+                     MachineBasicBlock::iterator &It,
+                     MachineFunction &MF) const override;
 
   /// Returns true iff the routine could find two commutable operands in the
   /// given machine instruction with 3 vector inputs.
