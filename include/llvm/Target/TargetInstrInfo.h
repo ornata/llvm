@@ -1526,7 +1526,7 @@ private:
   /// Insert a custom epilogue for outlined functions.
   /// This may be empty, in which case no epilogue or return statement will be
   /// emitted.
-  virtual void insertOutlinerEpilog(MachineBasicBlock &MBB,
+  virtual void insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                     MachineFunction &MF) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinerEpilog!");
@@ -1547,7 +1547,7 @@ private:
 
   /// Insert a custom prologue for outlined functions.
   /// This may be empty, in which case no prologue will be emitted.
-  virtual void insertOutlinerProlog(MachineBasicBlock &MBB,
+  virtual void insertOutlinerPrologue(MachineBasicBlock &MBB,
                                     MachineFunction &MF) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinerProlog!"

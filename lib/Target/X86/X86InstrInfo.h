@@ -583,23 +583,6 @@ private:
   bool isFrameOperand(const MachineInstr &MI, unsigned int Op,
                       int &FrameIndex) const;
 
-public:
-  bool functionIsSafeToOutlineFrom(Function &F) const override;
-
-  bool isLegalToOutline(MachineInstr &MI) const override;
-
-  void insertOutlinerEpilog(MachineBasicBlock &MBB,
-                            MachineFunction &MF) const override;
-
-  void insertOutlinerProlog(MachineBasicBlock &MBB,
-                            MachineFunction &MF) const override;
-
-  MachineBasicBlock::iterator
-  insertOutlinedCall(Module &M,
-                     MachineBasicBlock &MBB,
-                     MachineBasicBlock::iterator &It,
-                     MachineFunction &MF) const override;
-
   /// Returns true iff the routine could find two commutable operands in the
   /// given machine instruction with 3 vector inputs.
   /// The 'SrcOpIdx1' and 'SrcOpIdx2' are INPUT and OUTPUT arguments. Their
@@ -618,6 +601,24 @@ public:
   bool findThreeSrcCommutedOpIndices(const MachineInstr &MI,
                                      unsigned &SrcOpIdx1,
                                      unsigned &SrcOpIdx2) const;
+
+public:
+  bool functionIsSafeToOutlineFrom(Function &F) const override;
+
+  bool isLegalToOutline(MachineInstr &MI) const override;
+
+  void insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                              MachineFunction &MF) const override;
+
+  void insertOutlinerPrologue(MachineBasicBlock &MBB,
+                              MachineFunction &MF) const override;
+
+  MachineBasicBlock::iterator
+  insertOutlinedCall(
+                     Module &M,
+                     MachineBasicBlock &MBB,
+                     MachineBasicBlock::iterator &It,
+                     MachineFunction &MF) const override;
 };
 
 } // End llvm namespace

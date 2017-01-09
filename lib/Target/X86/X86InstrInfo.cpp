@@ -9791,13 +9791,13 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
   return true;
 }
 
-void X86InstrInfo::insertOutlinerEpilog(MachineBasicBlock &MBB,
+void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                         MachineFunction &MF) const {
   MachineInstr *retq = BuildMI(MF, DebugLoc(), get(X86::RETQ));
   MBB.insert(MBB.begin(), retq);
 }
 
-void X86InstrInfo::insertOutlinerProlog(MachineBasicBlock &MBB,
+void X86InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,
                                         MachineFunction &MF) const {
   return;
 }
