@@ -31,8 +31,11 @@ define void @test_simple_arg(i32 %in) {
 }
 
 ; CHECK-LABEL: name: test_indirect_call
-; CHECK: [[FUNC:%[0-9]+]](p0) = COPY %x0
-; CHECK: BLR [[FUNC]](p0), csr_aarch64_aapcs, implicit-def %lr, implicit %sp
+; CHECK: registers:
+; Make sure the register feeding the indirect call is properly constrained.
+; CHECK: - { id: [[FUNC:[0-9]+]], class: gpr64 }
+; CHECK: %[[FUNC]](p0) = COPY %x0
+; CHECK: BLR %[[FUNC]](p0), csr_aarch64_aapcs, implicit-def %lr, implicit %sp
 ; CHECK: RET_ReallyLR
 define void @test_indirect_call(void()* %func) {
   call void %func()
@@ -162,9 +165,9 @@ define void @test_stack_slots([8 x i64], i64 %lhs, i64 %rhs, i64* %addr) {
 }
 
 ; CHECK-LABEL: name: test_call_stack
-; CHECK: [[PTR:%[0-9]+]](p0) = G_CONSTANT i64 0
-; CHECK: [[C12:%[0-9]+]](s64) = G_CONSTANT i64 12
 ; CHECK: [[C42:%[0-9]+]](s64) = G_CONSTANT i64 42
+; CHECK: [[C12:%[0-9]+]](s64) = G_CONSTANT i64 12
+; CHECK: [[PTR:%[0-9]+]](p0) = G_CONSTANT i64 0
 ; CHECK: [[SP:%[0-9]+]](p0) = COPY %sp
 ; CHECK: [[C42_OFFS:%[0-9]+]](s64) = G_CONSTANT i64 0
 ; CHECK: [[C42_LOC:%[0-9]+]](p0) = G_GEP [[SP]], [[C42_OFFS]](s64)

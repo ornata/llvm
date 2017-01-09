@@ -14,6 +14,7 @@
 #include "llvm/ObjectYAML/MachOYAML.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/Host.h"
 #include "llvm/Support/MachO.h"
 
 #include <string.h> // For memcpy, memset and strnlen.
@@ -27,10 +28,6 @@ bool MachOYAML::LinkEditData::isEmpty() const {
          RebaseOpcodes.size() + BindOpcodes.size() + WeakBindOpcodes.size() +
              LazyBindOpcodes.size() + ExportTrie.Children.size() +
              NameList.size() + StringTable.size();
-}
-
-bool MachOYAML::DWARFData::isEmpty() const {
-  return 0 == DebugStrings.size();
 }
 
 namespace yaml {
@@ -104,6 +101,10 @@ void MappingTraits<MachOYAML::Object>::mapping(IO &IO,
     IO.setContext(&Object);
   }
   IO.mapTag("!mach-o", true);
+  IO.mapOptional("IsLittleEndian", Object.IsLittleEndian,
+                 sys::IsLittleEndianHost);
+  Object.DWARF.IsLittleEndian = Object.IsLittleEndian;
+
   IO.mapRequired("FileHeader", Object.Header);
   IO.mapOptional("LoadCommands", Object.LoadCommands);
   if(!Object.LinkEdit.isEmpty() || !IO.outputting())
@@ -555,11 +556,6 @@ void MappingTraits<MachO::version_min_command>::mapping(
 
   IO.mapRequired("version", LoadCommand.version);
   IO.mapRequired("sdk", LoadCommand.sdk);
-}
-
-void MappingTraits<MachOYAML::DWARFData>::mapping(
-    IO &IO, MachOYAML::DWARFData &DWARF) {
-  IO.mapRequired("DebugStrings", DWARF.DebugStrings);
 }
 
 } // namespace llvm::yaml

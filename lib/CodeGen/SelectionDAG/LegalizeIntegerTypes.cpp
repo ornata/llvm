@@ -428,7 +428,11 @@ SDValue DAGTypeLegalizer::PromoteIntRes_FP_TO_XINT(SDNode *N) {
   // Assert that the converted value fits in the original type.  If it doesn't
   // (eg: because the value being converted is too big), then the result of the
   // original operation was undefined anyway, so the assert is still correct.
-  return DAG.getNode(NewOpc == ISD::FP_TO_UINT ?
+  //
+  // NOTE: fp-to-uint to fp-to-sint promotion guarantees zero extend. For example:
+  //   before legalization: fp-to-uint16, 65534. -> 0xfffe
+  //   after legalization: fp-to-sint32, 65534. -> 0x0000fffe
+  return DAG.getNode(N->getOpcode() == ISD::FP_TO_UINT ?
                      ISD::AssertZext : ISD::AssertSext, dl, NVT, Res,
                      DAG.getValueType(N->getValueType(0).getScalarType()));
 }
@@ -1710,7 +1714,7 @@ void DAGTypeLegalizer::ExpandIntRes_MINMAX(SDNode *N,
   EVT CCT = getSetCCResultType(NVT);
 
   // Hi part is always the same op
-  Hi = DAG.getNode(N->getOpcode(), DL, {NVT, NVT}, {LHSH, RHSH});
+  Hi = DAG.getNode(N->getOpcode(), DL, NVT, {LHSH, RHSH});
 
   // We need to know whether to select Lo part that corresponds to 'winning'
   // Hi part or if Hi parts are equal.
@@ -1721,7 +1725,7 @@ void DAGTypeLegalizer::ExpandIntRes_MINMAX(SDNode *N,
   SDValue LoCmp = DAG.getSelect(DL, NVT, IsHiLeft, LHSL, RHSL);
 
   // Recursed Lo part if Hi parts are equal, this uses unsigned version
-  SDValue LoMinMax = DAG.getNode(LoOpc, DL, {NVT, NVT}, {LHSL, RHSL});
+  SDValue LoMinMax = DAG.getNode(LoOpc, DL, NVT, {LHSL, RHSL});
 
   Lo = DAG.getSelect(DL, NVT, IsHiEq, LoMinMax, LoCmp);
 }
@@ -2189,7 +2193,9 @@ void DAGTypeLegalizer::ExpandIntRes_MUL(SDNode *N,
   GetExpandedInteger(N->getOperand(0), LL, LH);
   GetExpandedInteger(N->getOperand(1), RL, RH);
 
-  if (TLI.expandMUL(N, Lo, Hi, NVT, DAG, LL, LH, RL, RH))
+  if (TLI.expandMUL(N, Lo, Hi, NVT, DAG,
+                    TargetLowering::MulExpansionKind::OnlyLegalOrCustom,
+                    LL, LH, RL, RH))
     return;
 
   // If nothing else, we can make a libcall.
@@ -2203,7 +2209,7 @@ void DAGTypeLegalizer::ExpandIntRes_MUL(SDNode *N,
   else if (VT == MVT::i128)
     LC = RTLIB::MUL_I128;
 
-  if (LC == RTLIB::UNKNOWN_LIBCALL) {
+  if (LC == RTLIB::UNKNOWN_LIBCALL || !TLI.getLibcallName(LC)) {
     // We'll expand the multiplication by brute force because we have no other
     // options. This is a trivially-generalized version of the code from
     // Hacker's Delight (itself derived from Knuth's Algorithm M from section

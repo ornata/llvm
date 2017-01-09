@@ -1162,15 +1162,19 @@ static bool checkMachOAndArchFlags(ObjectFile *O, StringRef Filename) {
   MachO::mach_header H;
   MachO::mach_header_64 H_64;
   Triple T;
+  const char *McpuDefault, *ArchFlag;
   if (MachO->is64Bit()) {
     H_64 = MachO->MachOObjectFile::getHeader64();
-    T = MachOObjectFile::getArchTriple(H_64.cputype, H_64.cpusubtype);
+    T = MachOObjectFile::getArchTriple(H_64.cputype, H_64.cpusubtype,
+                                       &McpuDefault, &ArchFlag);
   } else {
     H = MachO->MachOObjectFile::getHeader();
-    T = MachOObjectFile::getArchTriple(H.cputype, H.cpusubtype);
+    T = MachOObjectFile::getArchTriple(H.cputype, H.cpusubtype,
+                                       &McpuDefault, &ArchFlag);
   }
+  const std::string ArchFlagName(ArchFlag);
   if (none_of(ArchFlags, [&](const std::string &Name) {
-        return Name == T.getArchName();
+        return Name == ArchFlagName;
       })) {
     errs() << "llvm-objdump: " + Filename + ": No architecture specified.\n";
     return false;
@@ -1419,7 +1423,7 @@ static void printMachOUniversalHeaders(const object::MachOUniversalBinary *UB,
       }
     }
     if (verbose) {
-      outs() << OFA.getArchTypeName() << "\n";
+      outs() << OFA.getArchFlagName() << "\n";
       printCPUType(cputype, cpusubtype & ~MachO::CPU_SUBTYPE_MASK);
     } else {
       outs() << i << "\n";
@@ -1603,13 +1607,13 @@ void llvm::ParseInputMachO(StringRef Filename) {
         for (MachOUniversalBinary::object_iterator I = UB->begin_objects(),
                                                    E = UB->end_objects();
              I != E; ++I) {
-          if (ArchFlags[i] == I->getArchTypeName()) {
+          if (ArchFlags[i] == I->getArchFlagName()) {
             ArchFound = true;
             Expected<std::unique_ptr<ObjectFile>> ObjOrErr =
                 I->getAsObjectFile();
             std::string ArchitectureName = "";
             if (ArchFlags.size() > 1)
-              ArchitectureName = I->getArchTypeName();
+              ArchitectureName = I->getArchFlagName();
             if (ObjOrErr) {
               ObjectFile &O = *ObjOrErr.get();
               if (MachOObjectFile *MachOOF = dyn_cast<MachOObjectFile>(&O))
@@ -1646,7 +1650,7 @@ void llvm::ParseInputMachO(StringRef Filename) {
             } else {
               consumeError(AOrErr.takeError());
               error("Mach-O universal file: " + Filename + " for " +
-                    "architecture " + StringRef(I->getArchTypeName()) +
+                    "architecture " + StringRef(I->getArchFlagName()) +
                     " is not a Mach-O file or an archive file");
             }
           }
@@ -1666,7 +1670,7 @@ void llvm::ParseInputMachO(StringRef Filename) {
                                                  E = UB->end_objects();
            I != E; ++I) {
         if (MachOObjectFile::getHostArch().getArchName() ==
-            I->getArchTypeName()) {
+            I->getArchFlagName()) {
           Expected<std::unique_ptr<ObjectFile>> ObjOrErr = I->getAsObjectFile();
           std::string ArchiveName;
           ArchiveName.clear();
@@ -1702,7 +1706,7 @@ void llvm::ParseInputMachO(StringRef Filename) {
           } else {
             consumeError(AOrErr.takeError());
             error("Mach-O universal file: " + Filename + " for architecture " +
-                  StringRef(I->getArchTypeName()) +
+                  StringRef(I->getArchFlagName()) +
                   " is not a Mach-O file or an archive file");
           }
           return;
@@ -1718,7 +1722,7 @@ void llvm::ParseInputMachO(StringRef Filename) {
       Expected<std::unique_ptr<ObjectFile>> ObjOrErr = I->getAsObjectFile();
       std::string ArchitectureName = "";
       if (moreThanOneArch)
-        ArchitectureName = I->getArchTypeName();
+        ArchitectureName = I->getArchFlagName();
       if (ObjOrErr) {
         ObjectFile &Obj = *ObjOrErr.get();
         if (MachOObjectFile *MachOOF = dyn_cast<MachOObjectFile>(&Obj))
@@ -1757,7 +1761,7 @@ void llvm::ParseInputMachO(StringRef Filename) {
       } else {
         consumeError(AOrErr.takeError());
         error("Mach-O universal file: " + Filename + " for architecture " +
-              StringRef(I->getArchTypeName()) +
+              StringRef(I->getArchFlagName()) +
               " is not a Mach-O file or an archive file");
       }
     }
@@ -1776,10 +1780,6 @@ void llvm::ParseInputMachO(StringRef Filename) {
   llvm_unreachable("Input object can't be invalid at this point");
 }
 
-typedef std::pair<uint64_t, const char *> BindInfoEntry;
-typedef std::vector<BindInfoEntry> BindTable;
-typedef BindTable::iterator bind_table_iterator;
-
 // The block of info used by the Symbolizer call backs.
 struct DisassembleInfo {
   bool verbose;
@@ -1793,7 +1793,7 @@ struct DisassembleInfo {
   char *demangled_name;
   uint64_t adrp_addr;
   uint32_t adrp_inst;
-  BindTable *bindtable;
+  std::unique_ptr<SymbolAddressMap> bindtable;
   uint32_t depth;
 };
 
@@ -5307,9 +5307,6 @@ static void printObjc2_64bit_MetaData(MachOObjectFile *O, bool verbose) {
     II = get_section(O, "__DATA", "__objc_imageinfo");
   info.S = II;
   print_image_info64(II, &info);
-
-  if (info.bindtable != nullptr)
-    delete info.bindtable;
 }
 
 static void printObjc2_32bit_MetaData(MachOObjectFile *O, bool verbose) {
@@ -6837,14 +6834,10 @@ static void DisassembleMachO(StringRef Filename, MachOObjectFile *MachOOF,
       free(SymbolizerInfo.method);
     if (SymbolizerInfo.demangled_name != nullptr)
       free(SymbolizerInfo.demangled_name);
-    if (SymbolizerInfo.bindtable != nullptr)
-      delete SymbolizerInfo.bindtable;
     if (ThumbSymbolizerInfo.method != nullptr)
       free(ThumbSymbolizerInfo.method);
     if (ThumbSymbolizerInfo.demangled_name != nullptr)
       free(ThumbSymbolizerInfo.demangled_name);
-    if (ThumbSymbolizerInfo.bindtable != nullptr)
-      delete ThumbSymbolizerInfo.bindtable;
   }
 }
 
@@ -9423,7 +9416,7 @@ void llvm::printMachOWeakBindTable(const object::MachOObjectFile *Obj) {
 static const char *get_dyld_bind_info_symbolname(uint64_t ReferenceValue,
                                                  struct DisassembleInfo *info) {
   if (info->bindtable == nullptr) {
-    info->bindtable = new (BindTable);
+    info->bindtable = llvm::make_unique<SymbolAddressMap>();
     SegInfo sectionTable(info->O);
     for (const llvm::object::MachOBindEntry &Entry : info->O->bindTable()) {
       uint32_t SegIndex = Entry.segmentIndex();
@@ -9431,21 +9424,11 @@ static const char *get_dyld_bind_info_symbolname(uint64_t ReferenceValue,
       if (!sectionTable.isValidSegIndexAndOffset(SegIndex, OffsetInSeg))
         continue;
       uint64_t Address = sectionTable.address(SegIndex, OffsetInSeg);
-      const char *SymbolName = nullptr;
       StringRef name = Entry.symbolName();
       if (!name.empty())
-        SymbolName = name.data();
-      info->bindtable->push_back(std::make_pair(Address, SymbolName));
+        (*info->bindtable)[Address] = name;
     }
   }
-  for (bind_table_iterator BI = info->bindtable->begin(),
-                           BE = info->bindtable->end();
-       BI != BE; ++BI) {
-    uint64_t Address = BI->first;
-    if (ReferenceValue == Address) {
-      const char *SymbolName = BI->second;
-      return SymbolName;
-    }
-  }
-  return nullptr;
+  auto name = info->bindtable->lookup(ReferenceValue);
+  return !name.empty() ? name.data() : nullptr;
 }

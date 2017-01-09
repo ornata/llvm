@@ -20,6 +20,7 @@
 #include "FuzzerTracePC.h"
 #include "FuzzerValueBitMap.h"
 #include <map>
+#include <sanitizer/coverage_interface.h>
 #include <set>
 #include <sstream>
 
@@ -78,19 +79,28 @@ static bool IsInterestingCoverageFile(std::string &File) {
   return true;
 }
 
+void TracePC::InitializePrintNewPCs() {
+  if (!DoPrintNewPCs) return;
+  assert(!PrintedPCs);
+  PrintedPCs = new std::set<uintptr_t>;
+  for (size_t i = 1; i < GetNumPCs(); i++)
+    if (PCs[i])
+      PrintedPCs->insert(PCs[i]);
+}
+
 void TracePC::PrintNewPCs() {
-  if (DoPrintNewPCs) {
-    if (!PrintedPCs)
-      PrintedPCs = new std::set<uintptr_t>;
-    for (size_t i = 1; i < GetNumPCs(); i++)
-      if (PCs[i] && PrintedPCs->insert(PCs[i]).second)
-        PrintPC("\tNEW_PC: %p %F %L\n", "\tNEW_PC: %p\n", PCs[i]);
-  }
+  if (!DoPrintNewPCs) return;
+  assert(PrintedPCs);
+  for (size_t i = 1; i < GetNumPCs(); i++)
+    if (PCs[i] && PrintedPCs->insert(PCs[i]).second)
+      PrintPC("\tNEW_PC: %p %F %L\n", "\tNEW_PC: %p\n", PCs[i]);
 }
 
 void TracePC::PrintCoverage() {
-  if (!EF->__sanitizer_symbolize_pc) {
-    Printf("INFO: __sanitizer_symbolize_pc is not available,"
+  if (!EF->__sanitizer_symbolize_pc ||
+      !EF->__sanitizer_get_module_and_offset_for_pc) {
+    Printf("INFO: __sanitizer_symbolize_pc or "
+           "__sanitizer_get_module_and_offset_for_pc is not available,"
            " not printing coverage\n");
     return;
   }
@@ -106,12 +116,15 @@ void TracePC::PrintCoverage() {
     std::string FixedPCStr = DescribePC("%p", PCs[i]);
     std::string FunctionStr = DescribePC("%F", PCs[i]);
     std::string LineStr = DescribePC("%l", PCs[i]);
-    // TODO(kcc): get the module using some other way since this
-    // does not work with ASAN_OPTIONS=strip_path_prefix=something.
-    std::string Module = DescribePC("%m", PCs[i]);
-    std::string OffsetStr = DescribePC("%o", PCs[i]);
+    char ModulePathRaw[4096] = "";  // What's PATH_MAX in portable C++?
+    void *OffsetRaw = nullptr;
+    if (!EF->__sanitizer_get_module_and_offset_for_pc(
+            reinterpret_cast<void *>(PCs[i]), ModulePathRaw,
+            sizeof(ModulePathRaw), &OffsetRaw))
+      continue;
+    std::string Module = ModulePathRaw;
     uintptr_t FixedPC = std::stol(FixedPCStr, 0, 16);
-    uintptr_t PcOffset = std::stol(OffsetStr, 0, 16);
+    uintptr_t PcOffset = reinterpret_cast<uintptr_t>(OffsetRaw);
     ModuleOffsets[Module] = FixedPC - PcOffset;
     CoveredPCsPerModule[Module].push_back(PcOffset);
     CoveredFunctions.insert(FunctionStr);
@@ -183,6 +196,10 @@ void TracePC::PrintCoverage() {
   }
 }
 
+void TracePC::DumpCoverage() {
+  __sanitizer_dump_coverage(PCs, GetNumPCs());
+}
+
 // Value profile.
 // We keep track of various values that affect control flow.
 // These values are inserted into a bit-set-based hash map.
@@ -193,9 +210,7 @@ void TracePC::PrintCoverage() {
 // For cmp instructions the interesting value is a XOR of the parameters.
 // The interesting value is mixed up with the PC and is then added to the map.
 
-#ifdef __clang__  // avoid gcc warning.
-__attribute__((no_sanitize("memory")))
-#endif
+ATTRIBUTE_NO_SANITIZE_MEMORY
 void TracePC::AddValueForMemcmp(void *caller_pc, const void *s1, const void *s2,
                               size_t n) {
   if (!n) return;
@@ -213,6 +228,7 @@ void TracePC::AddValueForMemcmp(void *caller_pc, const void *s1, const void *s2,
   TPC.HandleValueProfile((PC & 4095) | (Idx << 12));
 }
 
+ATTRIBUTE_NO_SANITIZE_MEMORY
 void TracePC::AddValueForStrcmp(void *caller_pc, const char *s1, const char *s2,
                               size_t n) {
   if (!n) return;
@@ -287,11 +303,26 @@ void __sanitizer_cov_trace_cmp1(uint8_t Arg1, uint8_t Arg2) {
 __attribute__((visibility("default")))
 void __sanitizer_cov_trace_switch(uint64_t Val, uint64_t *Cases) {
   uint64_t N = Cases[0];
+  uint64_t ValSizeInBits = Cases[1];
   uint64_t *Vals = Cases + 2;
+  // Skip the most common and the most boring case.
+  if (Vals[N - 1]  < 256 && Val < 256)
+    return;
   char *PC = (char*)__builtin_return_address(0);
-  for (size_t i = 0; i < N; i++)
-    if (Val != Vals[i])
-      fuzzer::TPC.HandleCmp(PC + i, Val, Vals[i]);
+  size_t i;
+  uint64_t Token = 0;
+  for (i = 0; i < N; i++) {
+    Token = Val ^ Vals[i];
+    if (Val < Vals[i])
+      break;
+  }
+
+  if (ValSizeInBits == 16)
+    fuzzer::TPC.HandleCmp(PC + i, static_cast<uint16_t>(Token), (uint16_t)(0));
+  else if (ValSizeInBits == 32)
+    fuzzer::TPC.HandleCmp(PC + i, static_cast<uint32_t>(Token), (uint32_t)(0));
+  else
+    fuzzer::TPC.HandleCmp(PC + i, Token, (uint64_t)(0));
 }
 
 __attribute__((visibility("default")))

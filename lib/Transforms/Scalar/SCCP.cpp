@@ -337,7 +337,7 @@ public:
   }
 
 private:
-  // pushToWorkList - Helper for markConstant/markForcedConstant
+  // pushToWorkList - Helper for markConstant/markForcedConstant/markOverdefined
   void pushToWorkList(LatticeVal &IV, Value *V) {
     if (IV.isOverdefined())
       return OverdefinedInstWorkList.push_back(V);
@@ -380,7 +380,7 @@ private:
           else
             dbgs() << *V << '\n');
     // Only instructions go on the work list
-    OverdefinedInstWorkList.push_back(V);
+    pushToWorkList(IV, V);
   }
 
   void mergeInValue(LatticeVal &IV, Value *V, LatticeVal MergeWithV) {
@@ -511,9 +511,6 @@ private:
   void visitSelectInst(SelectInst &I);
   void visitBinaryOperator(Instruction &I);
   void visitCmpInst(CmpInst &I);
-  void visitExtractElementInst(ExtractElementInst &I);
-  void visitInsertElementInst(InsertElementInst &I);
-  void visitShuffleVectorInst(ShuffleVectorInst &I);
   void visitExtractValueInst(ExtractValueInst &EVI);
   void visitInsertValueInst(InsertValueInst &IVI);
   void visitLandingPadInst(LandingPadInst &I) { markAnythingOverdefined(&I); }
@@ -549,7 +546,7 @@ private:
 
   void visitInstruction(Instruction &I) {
     // If a new instruction is added to LLVM that we don't handle.
-    dbgs() << "SCCP: Don't know how to handle: " << I << '\n';
+    DEBUG(dbgs() << "SCCP: Don't know how to handle: " << I << '\n');
     markAnythingOverdefined(&I);   // Just in case
   }
 };
@@ -916,7 +913,8 @@ void SCCPSolver::visitBinaryOperator(Instruction &I) {
 
   // If this is an AND or OR with 0 or -1, it doesn't matter that the other
   // operand is overdefined.
-  if (I.getOpcode() == Instruction::And || I.getOpcode() == Instruction::Or) {
+  if (I.getOpcode() == Instruction::And || I.getOpcode() == Instruction::Mul ||
+      I.getOpcode() == Instruction::Or) {
     LatticeVal *NonOverdefVal = nullptr;
     if (!V1State.isOverdefined())
       NonOverdefVal = &V1State;
@@ -927,8 +925,10 @@ void SCCPSolver::visitBinaryOperator(Instruction &I) {
       if (NonOverdefVal->isUnknown())
         return;
 
-      if (I.getOpcode() == Instruction::And) {
+      if (I.getOpcode() == Instruction::And ||
+          I.getOpcode() == Instruction::Mul) {
         // X and 0 = 0
+        // X * 0 = 0
         if (NonOverdefVal->getConstant()->isNullValue())
           return markConstant(IV, &I, NonOverdefVal->getConstant());
       } else {
@@ -965,21 +965,6 @@ void SCCPSolver::visitCmpInst(CmpInst &I) {
     return;
 
   markOverdefined(&I);
-}
-
-void SCCPSolver::visitExtractElementInst(ExtractElementInst &I) {
-  // TODO : SCCP does not handle vectors properly.
-  return markOverdefined(&I);
-}
-
-void SCCPSolver::visitInsertElementInst(InsertElementInst &I) {
-  // TODO : SCCP does not handle vectors properly.
-  return markOverdefined(&I);
-}
-
-void SCCPSolver::visitShuffleVectorInst(ShuffleVectorInst &I) {
-  // TODO : SCCP does not handle vectors properly.
-  return markOverdefined(&I);
 }
 
 // Handle getelementptr instructions.  If all operands are constants then we
@@ -1396,8 +1381,8 @@ bool SCCPSolver::ResolvedUndefsIn(Function &F) {
               break;
         }
 
-        // undef >>a X -> all ones
-        markForcedConstant(&I, Constant::getAllOnesValue(ITy));
+        // undef >>a X -> 0
+        markForcedConstant(&I, Constant::getNullValue(ITy));
         return true;
       case Instruction::LShr:
       case Instruction::Shl:

@@ -1903,7 +1903,7 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
     return foldICmpShlOne(Cmp, Shl, C);
 
   // Check that the shift amount is in range. If not, don't perform undefined
-  // shifts. When the shift is visited it will be simplified.
+  // shifts. When the shift is visited, it will be simplified.
   unsigned TypeBits = C->getBitWidth();
   if (ShiftAmt->uge(TypeBits))
     return nullptr;
@@ -1923,7 +1923,7 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
       return new ICmpInst(Pred, X, LShrC);
 
     if (Shl->hasOneUse()) {
-      // Otherwise strength reduce the shift into an and.
+      // Otherwise, strength reduce the shift into an and.
       Constant *Mask = ConstantInt::get(Shl->getType(),
           APInt::getLowBitsSet(TypeBits, TypeBits - ShiftAmt->getZExtValue()));
 
@@ -1951,7 +1951,7 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
   }
 
   // When the shift is nuw and pred is >u or <=u, comparison only really happens
-  // in the pre-shifted bits. Since InstSimplify canoncalizes <=u into <u, the
+  // in the pre-shifted bits. Since InstSimplify canonicalizes <=u into <u, the
   // <=u case can be further converted to match <u (see below).
   if (Shl->hasNoUnsignedWrap() &&
       (Pred == ICmpInst::ICMP_UGT || Pred == ICmpInst::ICMP_ULT)) {
@@ -1970,9 +1970,9 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
   // Transform (icmp pred iM (shl iM %v, N), C)
   // -> (icmp pred i(M-N) (trunc %v iM to i(M-N)), (trunc (C>>N))
   // Transform the shl to a trunc if (trunc (C>>N)) has no loss and M-N.
-  // This enables us to get rid of the shift in favor of a trunc which can be
+  // This enables us to get rid of the shift in favor of a trunc that may be
   // free on the target. It has the additional benefit of comparing to a
-  // smaller constant, which will be target friendly.
+  // smaller constant that may be more target-friendly.
   unsigned Amt = ShiftAmt->getLimitedValue(TypeBits - 1);
   if (Shl->hasOneUse() && Amt != 0 && C->countTrailingZeros() >= Amt &&
       DL.isLegalInteger(TypeBits - Amt)) {
@@ -3025,6 +3025,93 @@ Instruction *InstCombiner::foldICmpBinOp(ICmpInst &I) {
       auto *Zero = Constant::getNullValue(BO0->getType());
       return new ICmpInst(ICmpInst::ICMP_NE, Op1, Zero);
     }
+  }
+
+  return nullptr;
+}
+
+/// Fold icmp Pred min|max(X, Y), X.
+static Instruction *foldICmpWithMinMax(ICmpInst &Cmp) {
+  ICmpInst::Predicate Pred = Cmp.getPredicate();
+  Value *Op0 = Cmp.getOperand(0);
+  Value *X = Cmp.getOperand(1);
+
+  // Canonicalize minimum or maximum operand to LHS of the icmp.
+  if (match(X, m_c_SMin(m_Specific(Op0), m_Value())) ||
+      match(X, m_c_SMax(m_Specific(Op0), m_Value())) ||
+      match(X, m_c_UMin(m_Specific(Op0), m_Value())) ||
+      match(X, m_c_UMax(m_Specific(Op0), m_Value()))) {
+    std::swap(Op0, X);
+    Pred = Cmp.getSwappedPredicate();
+  }
+
+  Value *Y;
+  if (match(Op0, m_c_SMin(m_Specific(X), m_Value(Y)))) {
+    // smin(X, Y)  == X --> X s<= Y
+    // smin(X, Y) s>= X --> X s<= Y
+    if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_SGE)
+      return new ICmpInst(ICmpInst::ICMP_SLE, X, Y);
+
+    // smin(X, Y) != X --> X s> Y
+    // smin(X, Y) s< X --> X s> Y
+    if (Pred == CmpInst::ICMP_NE || Pred == CmpInst::ICMP_SLT)
+      return new ICmpInst(ICmpInst::ICMP_SGT, X, Y);
+
+    // These cases should be handled in InstSimplify:
+    // smin(X, Y) s<= X --> true
+    // smin(X, Y) s> X --> false
+    return nullptr;
+  }
+
+  if (match(Op0, m_c_SMax(m_Specific(X), m_Value(Y)))) {
+    // smax(X, Y)  == X --> X s>= Y
+    // smax(X, Y) s<= X --> X s>= Y
+    if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_SLE)
+      return new ICmpInst(ICmpInst::ICMP_SGE, X, Y);
+
+    // smax(X, Y) != X --> X s< Y
+    // smax(X, Y) s> X --> X s< Y
+    if (Pred == CmpInst::ICMP_NE || Pred == CmpInst::ICMP_SGT)
+      return new ICmpInst(ICmpInst::ICMP_SLT, X, Y);
+
+    // These cases should be handled in InstSimplify:
+    // smax(X, Y) s>= X --> true
+    // smax(X, Y) s< X --> false
+    return nullptr;
+  }
+
+  if (match(Op0, m_c_UMin(m_Specific(X), m_Value(Y)))) {
+    // umin(X, Y)  == X --> X u<= Y
+    // umin(X, Y) u>= X --> X u<= Y
+    if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_UGE)
+      return new ICmpInst(ICmpInst::ICMP_ULE, X, Y);
+
+    // umin(X, Y) != X --> X u> Y
+    // umin(X, Y) u< X --> X u> Y
+    if (Pred == CmpInst::ICMP_NE || Pred == CmpInst::ICMP_ULT)
+      return new ICmpInst(ICmpInst::ICMP_UGT, X, Y);
+
+    // These cases should be handled in InstSimplify:
+    // umin(X, Y) u<= X --> true
+    // umin(X, Y) u> X --> false
+    return nullptr;
+  }
+
+  if (match(Op0, m_c_UMax(m_Specific(X), m_Value(Y)))) {
+    // umax(X, Y)  == X --> X u>= Y
+    // umax(X, Y) u<= X --> X u>= Y
+    if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_ULE)
+      return new ICmpInst(ICmpInst::ICMP_UGE, X, Y);
+
+    // umax(X, Y) != X --> X u< Y
+    // umax(X, Y) u> X --> X u< Y
+    if (Pred == CmpInst::ICMP_NE || Pred == CmpInst::ICMP_UGT)
+      return new ICmpInst(ICmpInst::ICMP_ULT, X, Y);
+
+    // These cases should be handled in InstSimplify:
+    // umax(X, Y) u>= X --> true
+    // umax(X, Y) u< X --> false
+    return nullptr;
   }
 
   return nullptr;
@@ -4277,6 +4364,9 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
   if (Instruction *Res = foldICmpBinOp(I))
     return Res;
 
+  if (Instruction *Res = foldICmpWithMinMax(I))
+    return Res;
+
   {
     Value *A, *B;
     // Transform (A & ~B) == 0 --> (A & B) != 0
@@ -4661,17 +4751,17 @@ Instruction *InstCombiner::visitFCmpInst(FCmpInst &I) {
         const fltSemantics *Sem;
         // FIXME: This shouldn't be here.
         if (LHSExt->getSrcTy()->isHalfTy())
-          Sem = &APFloat::IEEEhalf;
+          Sem = &APFloat::IEEEhalf();
         else if (LHSExt->getSrcTy()->isFloatTy())
-          Sem = &APFloat::IEEEsingle;
+          Sem = &APFloat::IEEEsingle();
         else if (LHSExt->getSrcTy()->isDoubleTy())
-          Sem = &APFloat::IEEEdouble;
+          Sem = &APFloat::IEEEdouble();
         else if (LHSExt->getSrcTy()->isFP128Ty())
-          Sem = &APFloat::IEEEquad;
+          Sem = &APFloat::IEEEquad();
         else if (LHSExt->getSrcTy()->isX86_FP80Ty())
-          Sem = &APFloat::x87DoubleExtended;
+          Sem = &APFloat::x87DoubleExtended();
         else if (LHSExt->getSrcTy()->isPPC_FP128Ty())
-          Sem = &APFloat::PPCDoubleDouble;
+          Sem = &APFloat::PPCDoubleDouble();
         else
           break;
 

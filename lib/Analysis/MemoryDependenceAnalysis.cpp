@@ -339,43 +339,52 @@ MemDepResult MemoryDependenceResults::getPointerDependencyFrom(
 MemDepResult
 MemoryDependenceResults::getInvariantGroupPointerDependency(LoadInst *LI,
                                                             BasicBlock *BB) {
-  Value *LoadOperand = LI->getPointerOperand();
-  // It's is not safe to walk the use list of global value, because function
-  // passes aren't allowed to look outside their functions.
-  if (isa<GlobalValue>(LoadOperand))
-    return MemDepResult::getUnknown();
 
   auto *InvariantGroupMD = LI->getMetadata(LLVMContext::MD_invariant_group);
   if (!InvariantGroupMD)
     return MemDepResult::getUnknown();
 
-  MemDepResult Result = MemDepResult::getUnknown();
-  SmallSet<Value *, 14> Seen;
+  // Take the ptr operand after all casts and geps 0. This way we can search
+  // cast graph down only.
+  Value *LoadOperand = LI->getPointerOperand()->stripPointerCasts();
+
+  // It's is not safe to walk the use list of global value, because function
+  // passes aren't allowed to look outside their functions.
+  // FIXME: this could be fixed by filtering instructions from outside
+  // of current function.
+  if (isa<GlobalValue>(LoadOperand))
+    return MemDepResult::getUnknown();
+
   // Queue to process all pointers that are equivalent to load operand.
-  SmallVector<Value *, 8> LoadOperandsQueue;
+  SmallVector<const Value *, 8> LoadOperandsQueue;
   LoadOperandsQueue.push_back(LoadOperand);
   while (!LoadOperandsQueue.empty()) {
-    Value *Ptr = LoadOperandsQueue.pop_back_val();
-    if (isa<GlobalValue>(Ptr))
-      continue;
+    const Value *Ptr = LoadOperandsQueue.pop_back_val();
+    assert(Ptr && !isa<GlobalValue>(Ptr) &&
+           "Null or GlobalValue should not be inserted");
 
-    if (auto *BCI = dyn_cast<BitCastInst>(Ptr)) {
-      if (Seen.insert(BCI->getOperand(0)).second) {
-        LoadOperandsQueue.push_back(BCI->getOperand(0));
-      }
-    }
-
-    for (Use &Us : Ptr->uses()) {
+    for (const Use &Us : Ptr->uses()) {
       auto *U = dyn_cast<Instruction>(Us.getUser());
       if (!U || U == LI || !DT.dominates(U, LI))
         continue;
 
-      if (auto *BCI = dyn_cast<BitCastInst>(U)) {
-        if (Seen.insert(BCI).second) {
-          LoadOperandsQueue.push_back(BCI);
-        }
+      // Bitcast or gep with zeros are using Ptr. Add to queue to check it's
+      // users.      U = bitcast Ptr
+      if (isa<BitCastInst>(U)) {
+        LoadOperandsQueue.push_back(U);
         continue;
       }
+      // Gep with zeros is equivalent to bitcast.
+      // FIXME: we are not sure if some bitcast should be canonicalized to gep 0
+      // or gep 0 to bitcast because of SROA, so there are 2 forms. When
+      // typeless pointers will be ready then both cases will be gone
+      // (and this BFS also won't be needed).
+      if (auto *GEP = dyn_cast<GetElementPtrInst>(U))
+        if (GEP->hasAllZeroIndices()) {
+          LoadOperandsQueue.push_back(U);
+          continue;
+        }
+
       // If we hit load/store with the same invariant.group metadata (and the
       // same pointer operand) we can assume that value pointed by pointer
       // operand didn't change.
@@ -384,7 +393,7 @@ MemoryDependenceResults::getInvariantGroupPointerDependency(LoadInst *LI,
         return MemDepResult::getDef(U);
     }
   }
-  return Result;
+  return MemDepResult::getUnknown();
 }
 
 MemDepResult MemoryDependenceResults::getSimplePointerDependencyFrom(
@@ -1681,6 +1690,24 @@ void MemoryDependenceWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<DominatorTreeWrapperPass>();
   AU.addRequiredTransitive<AAResultsWrapperPass>();
   AU.addRequiredTransitive<TargetLibraryInfoWrapperPass>();
+}
+
+bool MemoryDependenceResults::invalidate(Function &F, const PreservedAnalyses &PA,
+                               FunctionAnalysisManager::Invalidator &Inv) {
+  // Check whether our analysis is preserved.
+  auto PAC = PA.getChecker<MemoryDependenceAnalysis>();
+  if (!PAC.preserved() && !PAC.preservedSet<AllAnalysesOn<Function>>())
+    // If not, give up now.
+    return true;
+
+  // Check whether the analyses we depend on became invalid for any reason.
+  if (Inv.invalidate<AAManager>(F, PA) ||
+      Inv.invalidate<AssumptionAnalysis>(F, PA) ||
+      Inv.invalidate<DominatorTreeAnalysis>(F, PA))
+    return true;
+
+  // Otherwise this analysis result remains valid.
+  return false;
 }
 
 unsigned MemoryDependenceResults::getDefaultBlockScanLimit() const {
