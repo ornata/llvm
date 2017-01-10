@@ -119,7 +119,8 @@ struct ProgramMapping {
   std::pair<size_t, size_t> locationOf(size_t Offset) {
     size_t MappingIdx;
     size_t NumMappings = MBBMappings.size();
-    for (MappingIdx = 0; MappingIdx < NumMappings; MappingIdx++) {
+
+    for (MappingIdx = 0; MappingIdx < NumMappings-1; MappingIdx++) {
 
       // First, get the size of the mapping we're currently looking at.
       size_t CurrMappingSize = MBBMappings[MappingIdx].size();
@@ -131,6 +132,10 @@ struct ProgramMapping {
 
       // Otherwise, move over to the next string.
       Offset -= CurrMappingSize;
+    }
+
+    if (MappingIdx == NumMappings-1) {
+      assert(Offset < MBBMappings[MappingIdx].size() && "Offset out of bounds!");
     }
 
     // We should always stop before we hit MBBMappings.size() since we're
@@ -241,6 +246,11 @@ struct SuffixTreeNode {
       SubstringLen = *EndIdx - StartIdx + 1;
 
     return SubstringLen;
+  }
+
+  /// Returns true if this node is a leaf.
+  bool isLeaf() {
+    return SuffixIdx != EmptyIdx;
   }
 };
 
@@ -360,14 +370,10 @@ private:
     bool IsLeaf = true;
 
     for (auto &ChildPair : CurrentNode.Children) {
-      if (ChildPair.second != nullptr) {
-        IsLeaf = false;
-
-        assert(ChildPair.second && "Node has a null child!");
-
-        setSuffixIndices(*ChildPair.second,
+      assert(ChildPair.second && "Node had a null child!");
+      IsLeaf = false;
+      setSuffixIndices(*ChildPair.second,
                              LabelHeight + ChildPair.second->size());
-      }
     }
 
     if (IsLeaf)
@@ -525,29 +531,28 @@ public:
   /// \param MaxLen [in, out] The length of the longest repeated substring.
   /// \param SubstringStartIdx [in, out] The start index of the first
   /// occurrence of the longest repeated substring found during the query.
-  /// \param NumOccurrences [in, out] The number of times the longest repeated
-  /// substring appears.
   void longestRepeatedNode(SuffixTreeNode &N, size_t LabelHeight,
-                           size_t &MaxLen, size_t &SubstringStartIdx,
-                           size_t &NumOccurrences) {
+                           size_t &MaxLen, size_t &StartIdx) {
+    if (!N.IsInTree)
+      return;
 
     // We hit an internal node, so we can traverse further down the tree.
     // For each child, traverse down as far as possible and set MaxHeight
-    if (N.SuffixIdx == EmptyIdx) {
+    if (!N.isLeaf()) {
       for (auto &ChildPair : N.Children) {
         if (ChildPair.second && ChildPair.second->IsInTree)
           longestRepeatedNode(*ChildPair.second,
-                              LabelHeight + ChildPair.second->size(), MaxLen,
-                              SubstringStartIdx, NumOccurrences);
+                              LabelHeight + ChildPair.second->size(),
+                              MaxLen,
+                              StartIdx);
       }
     }
 
     // We hit a leaf, so update MaxHeight if we've gone further down the
     // tree
-    else if (N.SuffixIdx != EmptyIdx && MaxLen < (LabelHeight - N.size())) {
+    else if (N.isLeaf() && N.Parent != Root && MaxLen < (LabelHeight - N.size())) {
       MaxLen = LabelHeight - N.size();
-      SubstringStartIdx = N.SuffixIdx;
-      NumOccurrences = (size_t)N.Parent->Children.size();
+      StartIdx = N.SuffixIdx;
     }
   }
 
@@ -559,9 +564,8 @@ public:
     size_t MaxHeight = 0;
     size_t FirstChar = 0;
     SuffixTreeNode &N = *Root;
-    size_t NumOccurrences = 0;
 
-    longestRepeatedNode(N, 0, MaxHeight, FirstChar, NumOccurrences);
+    longestRepeatedNode(N, 0, MaxHeight, FirstChar);
     std::vector<unsigned> Longest;
 
     for (size_t Idx = 0; Idx < MaxHeight; Idx++)
@@ -581,70 +585,51 @@ public:
   /// node exists, and nullptr otherwise.
   SuffixTreeNode *findString(const std::vector<unsigned> &QueryString,
                              size_t &CurrIdx,
-                             SuffixTreeNode *CurrSuffixTreeNode) {
-    SuffixTreeNode *RetSuffixTreeNode;
-    SuffixTreeNode *NextNode;
+                             SuffixTreeNode *CurrNode) {
+    
+    // The search ended at a nonexistent or purged node. Quit early.
+    if (!CurrNode || !CurrNode->IsInTree)
+      return nullptr;
 
-    if (CurrSuffixTreeNode == nullptr ||
-        CurrSuffixTreeNode->IsInTree == false) {
-      RetSuffixTreeNode = nullptr;
-    } else if (CurrSuffixTreeNode->StartIdx == EmptyIdx) {
+    if (CurrNode->StartIdx == EmptyIdx) {
       // If we're at the root we have to check if there's a child, and move to
       // that child. We don't consume the character since Root represents the
       // empty string.
-      if (CurrSuffixTreeNode->Children[QueryString[CurrIdx]] != nullptr &&
-          CurrSuffixTreeNode->Children[QueryString[CurrIdx]]->IsInTree) {
-        NextNode = CurrSuffixTreeNode->Children[QueryString[CurrIdx]];
-        RetSuffixTreeNode = findString(QueryString, CurrIdx, NextNode);
-      } else {
-        RetSuffixTreeNode = nullptr;
-      }
+      if (CurrNode->Children[QueryString[CurrIdx]] != nullptr &&
+          CurrNode->Children[QueryString[CurrIdx]]->IsInTree)
+        return findString(QueryString, CurrIdx,
+                          CurrNode->Children[QueryString[CurrIdx]]);
+
+      return nullptr;
     }
+
 
     // The node represents a non-empty string, so we should match against it and
     // check its children if necessary.
-    else {
-      size_t StrIdx = CurrSuffixTreeNode->StartIdx;
-      enum FoundState { ExactMatch, SubMatch, Mismatch };
-      FoundState Found = ExactMatch;
+    size_t StrIdx = CurrNode->StartIdx;
+    size_t MaxIdx = QueryString.size() - 1;
+    bool ContinueSearching = false;
+    // Increment CurrIdx while checking the mapping for equivalence. Set
+    // Found and possibly break based off of the case we find.
 
-      // Increment CurrIdx while checking the mapping for equivalence. Set
-      // Found and possibly break based off of the case we find.
-      while (CurrIdx < QueryString.size() - 1) {
+    for (; CurrIdx < MaxIdx; CurrIdx++, StrIdx++) {
 
-        // Failure case 1: We moved outside the string, BUT we matched
-        // perfectly up to that point.
-        if (StrIdx > *(CurrSuffixTreeNode->EndIdx)) {
-          Found = SubMatch;
-          break;
-        }
-
-        // Failure case 2: We have a true mismatch.
-        if (QueryString[CurrIdx] != Mapping.elementAt(StrIdx)) {
-          Found = Mismatch;
-          break;
-        }
-
-        StrIdx++;
-        CurrIdx++;
-      }
-
-      // Decide whether or not we should keep searching.
-      switch (Found) {
-      case ExactMatch:
-        RetSuffixTreeNode = CurrSuffixTreeNode;
-        break;
-      case SubMatch:
-        NextNode = CurrSuffixTreeNode->Children[QueryString[CurrIdx]];
-        RetSuffixTreeNode = findString(QueryString, CurrIdx, NextNode);
-        break;
-      case Mismatch:
-        RetSuffixTreeNode = nullptr;
+      // Failure case 1: We moved outside the string, BUT we matched
+      // perfectly up to that point.
+      if (StrIdx > *(CurrNode->EndIdx)) {
+        ContinueSearching = true;
         break;
       }
+
+      // We didn't match on the node, so we can stop here.
+      if (QueryString[CurrIdx] != Mapping.elementAt(StrIdx))
+        return nullptr;
     }
 
-    return RetSuffixTreeNode;
+    if (ContinueSearching)
+      return findString(QueryString, CurrIdx, CurrNode->Children[QueryString[CurrIdx]]);
+
+    return CurrNode;
   }
 
   /// \brief Remove a node from a tree and all nodes representing proper
@@ -676,49 +661,32 @@ public:
     if (!N || !N->IsInTree)
       return Occurrences;
 
-    // We matched exactly, so we're in a suffix. There's then exactly one
-    // occurrence.
-    if (N->SuffixIdx != EmptyIdx) {
+    // If we're in a suffix, then there's only one occurrence of this node.
+    if (N->isLeaf()) {
       size_t StartIdx = N->SuffixIdx;
       Occurrences.push_back(
           make_pair(Mapping.mappingContaining(StartIdx), StartIdx));
-    } else {
-      // There are occurrences. Collect them and then prune them from the tree.
-      SuffixTreeNode *M;
-
-      for (auto &ChildPair : N->Children) {
-        M = ChildPair.second;
-
-        if (M && M->SuffixIdx != EmptyIdx) {
-          size_t StartIdx = M->SuffixIdx;
-          Occurrences.push_back(
-              make_pair(Mapping.mappingContaining(StartIdx), StartIdx));
-        }
-      }
+      prune(N);
+      return Occurrences;
     }
 
+    // There "are" occurrences. Collect them and then prune them from the tree.
+    // There could also really be no occurrences because some of them could
+    // have been pruned.
+    SuffixTreeNode *M;
+
+    for (auto &ChildPair : N->Children) {
+      M = ChildPair.second;
+
+      if (M && M->IsInTree && M->isLeaf()) {
+        size_t StartIdx = M->SuffixIdx;
+        Occurrences.push_back(
+            make_pair(Mapping.mappingContaining(StartIdx), StartIdx));
+      }
+    }
+  
     prune(N);
-
     return Occurrences;
-  }
-
-  /// \brief Return the number of times the mapping \p QueryString appears in \p
-  /// Mapping.
-  size_t numOccurrences(const std::vector<unsigned> &QueryString) {
-    size_t Dummy;
-    SuffixTreeNode *N = findString(QueryString, Dummy, Root);
-
-    // If it isn't in the tree, then just return 0.
-    if (!N)
-      return 0;
-
-    // If it's a suffix it only appears once.
-    if (N->SuffixIdx != EmptyIdx)
-      return 1;
-
-    // Otherwise, it appears in the number of strings that we can move to
-    // from this point.
-    return N->Children.size();
   }
 
   /// \brief Create a suffix tree from a list of strings \p Strings, treating
@@ -800,6 +768,8 @@ struct OutlinedFunction {
   /// The number of times that this function has appeared.
   size_t OccurrenceCount;
 
+  std::vector<unsigned> Str;
+
   OutlinedFunction(MachineBasicBlock *OccBB_, size_t StartIdxInBB_,
                    size_t EndIdxInBB_, size_t Name_, size_t Id_,
                    size_t OccurrenceCount_)
@@ -824,6 +794,8 @@ struct MachineOutliner : public ModulePass {
   /// depending on the instruction.
   DenseMap<MachineInstr *, unsigned, MachineInstrExpressionTrait>
       InstructionIntegerMap;
+
+  std::map <unsigned, MachineInstr *> IntegerInstructionMap;
 
   /// The last value assigned to an instruction we ought not to outline.
   /// Set to -3 to avoid attempting to query the \p DenseMap in
@@ -928,6 +900,7 @@ void MachineOutliner::buildInstructionMapping(std::vector<unsigned> &Container,
     // If it's not, give it a bad number.
     if (!IsSafeToOutline) {
       Container.push_back(CurrIllegalInstrMapping);
+      IntegerInstructionMap.insert(std::make_pair(CurrIllegalInstrMapping, &MI));
       CurrIllegalInstrMapping--;
       assert(CurrLegalInstrMapping < CurrIllegalInstrMapping &&
              "Instruction mapping overflow!");
@@ -942,6 +915,7 @@ void MachineOutliner::buildInstructionMapping(std::vector<unsigned> &Container,
     // it the next available one.
     auto I = InstructionIntegerMap.insert(
         std::make_pair(&MI, CurrLegalInstrMapping));
+    IntegerInstructionMap.insert(std::make_pair(CurrLegalInstrMapping, &MI));
 
     if (I.second)
       CurrLegalInstrMapping++;
@@ -968,75 +942,83 @@ void MachineOutliner::buildCandidateList(
   // effective as each other. This is because both can knock out a candidate
   // that would be better, or would lead to a better combination of candidates
   // being chosen.
-  std::vector<unsigned> CandidateSequence = ST.longestRepeatedSubstring();
-
   // FIXME: Use the following cost model.
   // Weight = Occurrences * length
   // Benefit = Weight - [Len(outline prologue) + Len(outline epilogue) +
   // Len(functon call)]
-  if (CandidateSequence.size() >= 2) {
+
+  for (std::vector<unsigned> CandidateSequence = ST.longestRepeatedSubstring();
+       CandidateSequence.size() >= 2;
+       CandidateSequence = ST.longestRepeatedSubstring()) {
+
+    errs() << "Candidate: \n";
+    for (auto ch : CandidateSequence) {
+      IntegerInstructionMap.find(ch)->second->dump();
+    }
+    errs() << "\n";
+    errs() << "Size: " << CandidateSequence.size() << "\n";
 
     // Query the tree for candidates until we run out of candidates to outline.
-    do {
-      std::vector<std::pair<std::vector<unsigned>, size_t>> Occurrences =
-          ST.findOccurrencesAndPrune(CandidateSequence);
+    std::vector<std::pair<std::vector<unsigned>, size_t>> Occurrences =
+        ST.findOccurrencesAndPrune(CandidateSequence);    
 
-      assert(Occurrences.size() > 0 &&
-             "Longest repeated substring has no occurrences.");
+    if (Occurrences.size() < 2)
+      break;
 
-      // If there are at least two occurrences of this candidate, then we should
-      // make it a function and keep track of it.
-      if (Occurrences.size() >= 2) {
-        std::pair<std::vector<unsigned>, size_t> FirstOcc = Occurrences[0];
+    // If there are at least two occurrences of this candidate, then we should
+    // make it a function and keep track of it.
+    std::pair<std::vector<unsigned>, size_t> FirstOcc = Occurrences[0];
 
-        // The (flat) start index of the Candidate in the ProgramMapping.
-        size_t FlatStartIdx = FirstOcc.second;
+    // The (flat) start index of the Candidate in the ProgramMapping.
+    size_t FlatStartIdx = FirstOcc.second;
 
-        // Use that to find the index of the string/MachineBasicBlock it appears
-        // in and the point that it begins in in that string/MBB.
-        std::pair<size_t, size_t> FirstIdxAndOffset =
-            Mapping.locationOf(FlatStartIdx);
+    // Use that to find the index of the string/MachineBasicBlock it appears
+    // in and the point that it begins in in that string/MBB.
+    std::pair<size_t, size_t> FirstIdxAndOffset =
+        Mapping.locationOf(FlatStartIdx);
 
-        // From there, we can tell where the mapping starts and ends in the first
-        // occurrence so that we can copy it over.
-        size_t StartIdxInBB = FirstIdxAndOffset.second;
-        size_t EndIdxInBB = StartIdxInBB + CandidateSequence.size() - 1;
+    // From there, we can tell where the mapping starts and ends in the first
+    // occurrence so that we can copy it over.
+    size_t StartIdxInBB = FirstIdxAndOffset.second;
+    size_t EndIdxInBB = StartIdxInBB + CandidateSequence.size() - 1;
 
-        // Keep track of the MachineBasicBlock and its parent so that we can
-        // copy from it later.
-        MachineBasicBlock *OccBB = Worklist[FirstIdxAndOffset.first];
-        FunctionList.push_back(OutlinedFunction(
-            OccBB, StartIdxInBB, EndIdxInBB, FunctionList.size(),
-            CurrentFunctionID, Occurrences.size()));
+    // Keep track of the MachineBasicBlock and its parent so that we can
+    // copy from it later.
+    MachineBasicBlock *OccBB = Worklist[FirstIdxAndOffset.first];
+    errs() << "OccBB:\n";
+    OccBB->dump();
+    errs() << "\n";
+    errs() << "StartIdxInBB: " << StartIdxInBB << "\n";
+    errs() << "EndIdxInBB: " << EndIdxInBB << "\n";
 
-        // Save each of the occurrences for the outlining process.
-        for (auto &Occ : Occurrences) {
-          std::pair<size_t, size_t> IdxAndOffset =
-              Mapping.locationOf(Occ.second);
+    FunctionList.push_back(OutlinedFunction(
+        OccBB, StartIdxInBB, EndIdxInBB, FunctionList.size(),
+        CurrentFunctionID, Occurrences.size()));
+    FunctionList.back().Str = CandidateSequence;
 
-          CandidateList.push_back(Candidate(
-              IdxAndOffset.first,      // Idx of MBB containing candidate.
-              IdxAndOffset.second,     // Starting idx in that MBB.
-              CandidateSequence.size(),  // Candidate length.
-              Occ.second,              // Start index in the full string.
-              FunctionList.size() - 1, // Idx of the corresponding function.
-              CandidateSequence          // The actual string.
-              ));
-        }
+    // Save each of the occurrences for the outlining process.
+    for (auto &Occ : Occurrences) {
+      std::pair<size_t, size_t> IdxAndOffset =
+          Mapping.locationOf(Occ.second);
 
-        CurrentFunctionID++;
-        FunctionsCreatedStat++;
-      }
+      CandidateList.push_back(Candidate(
+          IdxAndOffset.first,      // Idx of MBB containing candidate.
+          IdxAndOffset.second,     // Starting idx in that MBB.
+          CandidateSequence.size(),  // Candidate length.
+          Occ.second,              // Start index in the full string.
+          FunctionList.size() - 1, // Idx of the corresponding function.
+          CandidateSequence          // The actual string.
+          ));
+    }
 
-      // Find the next candidate and continue the process.
-      CandidateSequence = ST.longestRepeatedSubstring();
-    } while (CandidateSequence.size() >= 2);
+    CurrentFunctionID++;
+    FunctionsCreatedStat++;
+  }
 
     // Sort the candidates in decending order. This will simplify the outlining
     // process when we have to remove the candidates from the mapping by
     // allowing us to cut them out without keeping track of an offset.
     std::stable_sort(CandidateList.begin(), CandidateList.end());
-  }
 }
 
 MachineFunction *
@@ -1076,8 +1058,14 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   TII->insertOutlinerEpilogue(*MBB, MF);
 
   MachineBasicBlock::iterator It = OF.OccBB->begin();
-  std::advance(It, OF.EndIdxInBB);
+  //std::advance(It, OF.EndIdxInBB);
+  for (size_t Idx = OF.Str.size()-1; Idx != 0; Idx--) {
+    MachineInstr *MI = MF.CloneMachineInstr(IntegerInstructionMap.find(OF.Str[Idx])->second);
+    MI->dropMemRefs();
+    MBB->insert(MBB->begin(), MI);
+  }
 
+  /*
   for (size_t i = 0, e = OF.EndIdxInBB - OF.StartIdxInBB + 1; i != e; i++) {
     MachineInstr *MI = MF.CloneMachineInstr(&*It);
 
@@ -1088,6 +1076,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
     MBB->insert(MBB->begin(), MI);
     It--;
   }
+  */
 
   TII->insertOutlinerPrologue(*MBB, MF);
 
@@ -1150,16 +1139,9 @@ bool MachineOutliner::outline(Module &M,
     OutlinedSomething = true;
     NumOutlinedStat++;
 
-    // Remove the candidate from the mapping in the suffix tree first, and
-    // replace it with the associated function's id.
-    // auto Begin = Mapping.MBBMappings[C.IdxOfMBB]->begin() + C.StartIdxInMBB;
-    auto Begin = Mapping.MBBMappings[C.IdxOfMBB].begin() + C.StartIdxInMBB;
-    auto End = Begin + C.Len;
-
-    Mapping.MBBMappings[C.IdxOfMBB].erase(Begin, End);
-    Mapping.MBBMappings[C.IdxOfMBB].insert(Begin, FunctionList[C.FunctionIdx].Id);
-
-    // Now outline the function in the module using the same idea.
+    // Outline the function from the module.
+    // Note that we don't have to do this from the mapped sequence because we
+    // sorted our candidates.
     MachineFunction *MF = FunctionList[C.FunctionIdx].MF;
     MachineBasicBlock *MBB = Worklist[C.IdxOfMBB];
     const TargetSubtargetInfo *STI = &(MF->getSubtarget());
