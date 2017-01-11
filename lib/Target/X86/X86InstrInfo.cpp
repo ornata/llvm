@@ -9757,12 +9757,25 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
     return false;
 
   // Don't outline anything that modifies or reads from the stack pointer.
+  //
+  // FIXME: There are instructions which are being manually built without
+  // explicit uses/defs so we also have to check the MCInstrDesc. We should be
+  // able to remove the extra checks once those are fixed up. For example,
+  // sometimes we might get something like %RAX<def> = POP64r 1. This won't be
+  // caught by modifiesRegister or readsRegister even though the instruction
+  // really ought to be formed so that modifiesRegister/readsRegister would
+  // catch it.
   if (MI.modifiesRegister(X86::RSP, &RI) ||
-      MI.readsRegister(X86::RSP, &RI))
+      MI.readsRegister(X86::RSP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP))
     return false;
 
+  // FIXME: Same as above.
   if (MI.modifiesRegister(X86::RIP, &RI) ||
-      MI.readsRegister(X86::RIP, &RI))
+      MI.readsRegister(X86::RIP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(X86::RIP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RIP))
     return false;
 
   // Don't outline the frame setup or destroy for a function
@@ -9794,7 +9807,7 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
 void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                         MachineFunction &MF) const {
   MachineInstr *retq = BuildMI(MF, DebugLoc(), get(X86::RETQ));
-  MBB.insert(MBB.begin(), retq);
+  MBB.insert(MBB.end(), retq);
 }
 
 void X86InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,
