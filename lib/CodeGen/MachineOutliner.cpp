@@ -67,36 +67,48 @@ namespace {
 
 const size_t EmptyIdx = -1; /// Represents an undefined index.
 
-/// Stores instruction-integer mappings for MachineBasicBlocks in the program.
+/// \brief Stores the integers that are used to represent instructions
+/// throughout the module. Each integer in \p BlockCorrespondences corresponds
+/// to some integer in the program. Each \p vector in BlockCorrespondences
+/// corresponds to a \p MachineBasicBlock.
 ///
-/// This is used for compatability with the suffix tree. Mappings will tend to
-/// be referred to as strings from the context of the suffix tree.
+/// The outliner works by putting every instruction in the module in
+/// many-one (but sometimes 1-1!) correspondence with an integer. A suffix tree
+/// is then used to find repeated sequences of such integers. Suffix trees
+/// require "strings" to work: that is, finite sequences of comparable objects.
 ///
-/// In the outliner, each \p MachineBasicBlock in the program is mapped to a
-/// \p vector of \p unsigneds. Each \p unsigned is either the hash for an
-/// instruction, or unique. Unique unsigneds represent instructions that the
-/// target specifies as unsafe to outline. The \p ProgramMapping stores these
-/// \p vectors and provides several convenience functions for the \p SuffixTree
-/// data structure.
+/// For the sake of simplicity, "sequence" and "the sequence of correspondences
+/// between instructions and integers which corresponds to some 
+/// \p MachineBasicBlock" will be used interchangably.
 ///
-/// Specifically, it gives us a way to map the collection of \p vectors into
-/// one big "string". Let's say [x,y] represents a \p vector where the first
-/// element is x, and the second is y. Our mappings might look like this:
+/// We could put the "integer correspondences" in a single, long vector and
+/// then query the tree for repeated sequences of those correspondences.
+/// However, we need to eventually remove all instances of those sequences from
+/// the module.
 ///
-/// [[1, 2, 3], [6, 28, 496], [1, 1, 2, 3]]
+/// The suffix tree can tell us about where in the entire vector any
+/// integer appears. However, this isn't enough: we need to know where in the
+/// module the corresponding instruction appears. In order to get around this,
+/// the \p BlockCorrespondences struct stores vectors for every
+/// \p MachineBasicBlock in the module. The suffix tree uses the
+/// \p BlockCorrespondences struct as if it was a single "flat" vector in order
+/// to generate a list of candidates. The outlining pass then uses the \p
+/// BlockCorrespondences struct to find out which \p MachineBasicBlocks contain
+/// each candidate so that they can actually be outlined.
 ///
-/// The suffix tree is a data structure for searching strings though. What it
-/// expects is something that looks more like this:
+/// For the sake of example, let's say we have a \p BlockCorrespondences struct
+/// which looks like this:
 ///
-/// [1, 2, 3, 6, 28, 496, 1, 1, 2, 3]
+/// [[0,1,2][3,4][5,6,7][8,9,10]]
 ///
-/// We'll refer to the above case as the "flattened" vector, and indices into
-/// that vector as flattened indices. The purpose of the \p ProgramMapping
-/// is to let us pretend a 2D vector is a flattened one. We can then place the
-/// \p ProgramMapping in the \p SuffixTree, find outlining candidates, but
-/// remember which \p MachineBasicBlock the candidate would be mapped from. We
-/// need to remember this because we need to clone the instructions from somewhere.
-struct ProgramMapping {
+/// Then the suffix tree would see the 3rd element of this correspondence as
+/// "3". We might want to see where "3" comes from. We can then query the
+/// \p BlockCorrespondences struct for where "3" comes from, and it would tell
+/// us it appears at correspondence 1, at offset 0. From this, if we store a
+/// working list of \p MachineBasicBlocks oredered such that MBB[i] is in
+/// correspondence with the i-th correspondence, we know that the instruction
+/// corresponding with "3" is the 0th instruction in MBB[1].
+struct BlockCorrespondences {
 
   /// \brief Stores mappings between \p MachineBasicBlocks and \p vectors of
   /// \p unsigneds.
@@ -106,56 +118,54 @@ struct ProgramMapping {
   /// be outlined are given a hash. Instructions that may not be outlined are
   /// given an unique integer so that they cannot be found in a repeated
   /// substring.
-  std::vector<std::vector<unsigned>> MBBMappings;
+  std::vector<std::vector<unsigned>> MBBCorrespondences;
 
   /// \brief Returns the pair of indices that a flattened index corresponds to
-  /// in \p MBBMappings.
+  /// in \p MBBCorrespondences.
   /// 
   /// \param Offset The flattened index.
   ///
   /// \returns A \p std::pair whose first element is the index of the vector
-  /// in \p MBBMappings containing \p Offset and whose second element is the
+  /// in \p MBBCorrespondences containing \p Offset and whose second element is the
   /// index of the element that \p Offset corresponds to in that mapping.
   std::pair<size_t, size_t> locationOf(size_t Offset) {
-    size_t MappingIdx;
-    size_t NumMappings = MBBMappings.size();
+    size_t CorrespondenceIdx;
+    size_t NumCorrespondences = MBBCorrespondences.size() - 1;
 
-    for (MappingIdx = 0; MappingIdx < NumMappings-1; MappingIdx++) {
+    for (CorrespondenceIdx = 0; CorrespondenceIdx < NumCorrespondences; CorrespondenceIdx++) {
 
       // First, get the size of the mapping we're currently looking at.
-      size_t CurrMappingSize = MBBMappings[MappingIdx].size();
-
-      // Now check if the offset is *less* than CurrMappingSize.
+      size_t CurrCorrespondenceSize = MBBCorrespondences[CorrespondenceIdx].size();
+      // Now check if the offset is *less* than CurrCorrespondenceSize.
       // If this is true, then the offset lies inside the current mapping.
-      if (Offset < CurrMappingSize)
+      if (Offset < CurrCorrespondenceSize)
         break;
 
       // Otherwise, move over to the next string.
-      Offset -= CurrMappingSize;
+      Offset -= CurrCorrespondenceSize;
     }
 
-    if (MappingIdx == NumMappings-1) {
-      assert(Offset < MBBMappings[MappingIdx].size() && "Offset out of bounds!");
-    }
+    // The offset should always be inside some basic block.
+    assert(Offset < MBBCorrespondences[CorrespondenceIdx].size());
 
-    // We should always stop before we hit MBBMappings.size() since we're
+    // We should always stop before we hit MBBCorrespondences.size() since we're
     // always looking for offsets that exist.
-    assert(MappingIdx < MBBMappings.size() && "Mapping index out of bounds!");
+    assert(CorrespondenceIdx < MBBCorrespondences.size() && "Correspondence index out of bounds!");
 
-    return std::make_pair(MappingIdx, Offset);
+    return std::make_pair(CorrespondenceIdx, Offset);
   }
 
-  /// Returns the element of \p ProgramMapping as a 2D mapping at \p QueryIdx.
+  /// Returns the element of \p BlockCorrespondences as a 2D mapping at \p QueryIdx.
   unsigned elementAt(size_t QueryIdx) {
     std::pair<size_t, size_t> IndexAndOffset = locationOf(QueryIdx);
-    return MBBMappings[IndexAndOffset.first][IndexAndOffset.second];
+    return MBBCorrespondences[IndexAndOffset.first][IndexAndOffset.second];
   }
 
   /// Returns the mapping that contains the index \p QueryIdx in the
-  /// \p ProgramMapping \p ProgramMapping and the offset into that mapping that
+  /// \p BlockCorrespondences \p BlockCorrespondences and the offset into that mapping that
   /// \p QueryIdx maps to.
   std::vector<unsigned> &mappingContaining(size_t QueryIdx) {
-    return MBBMappings[locationOf(QueryIdx).first];
+    return MBBCorrespondences[locationOf(QueryIdx).first];
   }
 };
 
@@ -320,7 +330,7 @@ private:
 
   /// \brief Contains the instruction-unsigned mappings for the basic blocks of
   /// the program.
-  ProgramMapping Mapping;
+  BlockCorrespondences Correspondence;
 
   /// The end index of each leaf in the tree.
   size_t LeafEndIdx = -1;
@@ -391,21 +401,23 @@ private:
   /// \param [in, out] SuffixesToAdd The number of suffixes that must be added
   /// to complete the suffix tree at the current phase.
   void extend(size_t EndIdx, SuffixTreeNode *NeedsLink, size_t &SuffixesToAdd) {
-    while (SuffixesToAdd > 0) {
 
+    while (SuffixesToAdd > 0) {
       // The length of the current mapping is 0, so we look at the last added
       // character to our substring.
       if (Active.Len == 0)
         Active.Idx = EndIdx;
 
+      assert(Active.Idx <= EndIdx && "First char can't be after last char!");
+
       // The first and last character in the current substring we're looking at.
-      unsigned FirstChar = Mapping.elementAt(Active.Idx);
-      unsigned LastChar = Mapping.elementAt(EndIdx);
+      unsigned FirstChar = Correspondence.elementAt(Active.Idx);
+      unsigned LastChar = Correspondence.elementAt(EndIdx);
 
       // During the previous step, we stopped on a node *and* it has no
       // transition to another node on the next character in our current
       // suffix.
-      if (Active.Node->Children[FirstChar] == nullptr) {
+      if (Active.Node->Children.count(FirstChar) == 0) {
         insertNode(Active.Node, EndIdx, EmptyIdx, FirstChar, true);
 
         // The active node is an internal node, and we visited it, so it must
@@ -420,7 +432,7 @@ private:
         SuffixTreeNode *NextNode = Active.Node->Children[FirstChar];
 
         // The child that we want to move to already contains our current mapping
-        // up to some point.Move to the index in that node where we'd have a
+        // up to some point. Move to the index in that node where we'd have a
         // mismatch and try again.
         size_t SubstringLen = NextNode->size();
         if (Active.Len >= SubstringLen) {
@@ -431,7 +443,7 @@ private:
         }
 
         // The mapping is already in the tree, so we're done.
-        if (Mapping.elementAt(NextNode->StartIdx + Active.Len) == LastChar) {
+        if (Correspondence.elementAt(NextNode->StartIdx + Active.Len) == LastChar) {
           if (NeedsLink && Active.Node->StartIdx != EmptyIdx) {
             NeedsLink->Link = Active.Node;
             NeedsLink = nullptr;
@@ -462,7 +474,7 @@ private:
         // node we inserted.
         NextNode->StartIdx += Active.Len;
         NextNode->Parent = SplitNode;
-        SplitNode->Children[Mapping.elementAt(NextNode->StartIdx)] = NextNode;
+        SplitNode->Children[Correspondence.elementAt(NextNode->StartIdx)] = NextNode;
 
         // We visited an internal node, so we need to set suffix links
         // accordingly.
@@ -475,26 +487,25 @@ private:
       // We've added something new to the tree. Now we can move to the next
       // suffix.
       SuffixesToAdd--;
+
       if (Active.Node->StartIdx == EmptyIdx) {
         if (Active.Len > 0) {
           Active.Len--;
-
-          // Move to the next suffix that we have to add.
           Active.Idx = EndIdx - SuffixesToAdd + 1;
         }
       } else {
-        // Start the next phase at the next smallest suffix.
-        Active.Node = Active.Node->Link;
+          // Start the next phase at the next smallest suffix.
+          Active.Node = Active.Node->Link;
       }
   }
 }
 
 public:
-  /// Append a new string to \p Mapping and update the suffix tree.
+  /// Append a new string to \p Correspondence and update the suffix tree.
   ///
   /// \param NewStr The string to append to the tree.
   void append(std::vector<unsigned> NewStr) {
-    Mapping.MBBMappings.push_back(NewStr);
+    Correspondence.MBBCorrespondences.push_back(NewStr);
 
     // Save the old size so we can start at the end of the old string
     size_t PrevNumInstructions = NumInstructionsInTree;
@@ -504,6 +515,7 @@ public:
     // prefix.
     size_t SuffixesToAdd = 0;
     SuffixTreeNode *NeedsLink = nullptr; // The last internal node added
+    Active.Node = Root;
 
     // PrevNumInstructions is initially 0 on the insertion of the first string.
     // At the insertion of the next string, PrevNumInstructions is the index of
@@ -557,7 +569,7 @@ public:
   }
 
   /// \brief Return a \p vector representing the longest substring of \p
-  /// Mapping which is repeated at least one time.
+  /// Correspondence which is repeated at least one time.
   ///
   /// Returns an empty vector if no such mapping exists.
   std::vector<unsigned> longestRepeatedSubstring() {
@@ -569,7 +581,7 @@ public:
     std::vector<unsigned> Longest;
 
     for (size_t Idx = 0; Idx < MaxHeight; Idx++)
-      Longest.push_back(Mapping.elementAt(Idx + FirstChar));
+      Longest.push_back(Correspondence.elementAt(Idx + FirstChar));
 
     return Longest;
   }
@@ -622,7 +634,7 @@ public:
       }
 
       // We didn't match on the node, so we can stop here.
-      if (QueryString[CurrIdx] != Mapping.elementAt(StrIdx))
+      if (QueryString[CurrIdx] != Correspondence.elementAt(StrIdx))
         return nullptr;
     }
 
@@ -645,11 +657,11 @@ public:
       T->IsInTree = false;
   }
 
-  /// Find each occurrence of of a mapping in \p Mapping and prune their nodes.
+  /// Find each occurrence of of a mapping in \p Correspondence and prune their nodes.
   ///
   /// \param QueryString The mapping to search for.
   ///
-  /// \returns A list of pairs of \p Strings and offsets into \p Mapping
+  /// \returns A list of pairs of \p Strings and offsets into \p Correspondence
   /// representing each occurrence if \p QueryString is present. Returns
   /// an empty vector if there are no occurrences.
   std::vector<std::pair<std::vector<unsigned>, size_t>>
@@ -665,7 +677,7 @@ public:
     if (N->isLeaf()) {
       size_t StartIdx = N->SuffixIdx;
       Occurrences.push_back(
-          make_pair(Mapping.mappingContaining(StartIdx), StartIdx));
+          make_pair(Correspondence.mappingContaining(StartIdx), StartIdx));
       prune(N);
       return Occurrences;
     }
@@ -681,7 +693,7 @@ public:
       if (M && M->IsInTree && M->isLeaf()) {
         size_t StartIdx = M->SuffixIdx;
         Occurrences.push_back(
-            make_pair(Mapping.mappingContaining(StartIdx), StartIdx));
+            make_pair(Correspondence.mappingContaining(StartIdx), StartIdx));
       }
     }
   
@@ -691,11 +703,11 @@ public:
 
   /// \brief Create a suffix tree from a list of strings \p Strings, treating
   /// that list as a flat string.
-  SuffixTree(const ProgramMapping &Strings) {
+  SuffixTree(const BlockCorrespondences &Strings) {
     Root = insertNode(nullptr, EmptyIdx, EmptyIdx, 0, false);
     Active.Node = Root;
 
-    for (auto &Str : Strings.MBBMappings)
+    for (auto &Str : Strings.MBBCorrespondences)
       append(Str);
   }
 };
@@ -715,8 +727,8 @@ struct Candidate {
   size_t Len;
 
   /// \brief The flat start index of this Candidate's sequence of instructions
-  /// in the \p ProgramMapping.
-  size_t FlatMappingStartIdx;
+  /// in the \p BlockCorrespondences.
+  size_t FlatCorrespondenceStartIdx;
 
   /// The index of this \p Candidate's \p OutlinedFunction in the list of
   /// \p OutlinedFunctions.
@@ -729,16 +741,16 @@ struct Candidate {
   std::vector<unsigned> Str;
 
   Candidate(size_t IdxOfMBB_, size_t StartIdxInMBB_, size_t Len_,
-            size_t FlatMappingStartIdx_, size_t FunctionIdx_,
+            size_t FlatCorrespondenceStartIdx_, size_t FunctionIdx_,
             std::vector<unsigned> Str_)
       : IdxOfMBB(IdxOfMBB_), StartIdxInMBB(StartIdxInMBB_), Len(Len_),
-        FlatMappingStartIdx(FlatMappingStartIdx_), FunctionIdx(FunctionIdx_),
+        FlatCorrespondenceStartIdx(FlatCorrespondenceStartIdx_), FunctionIdx(FunctionIdx_),
         Str(Str_) {}
 
   /// \brief Used to ensure that \p Candidates are outlined in an order that
   /// preserves the start and end indices of other \p Candidates.
   bool operator<(const Candidate &rhs) const {
-    return FlatMappingStartIdx > rhs.FlatMappingStartIdx;
+    return FlatCorrespondenceStartIdx > rhs.FlatCorrespondenceStartIdx;
   }
 };
 
@@ -749,32 +761,16 @@ struct OutlinedFunction {
   /// This is initialized after we go through and create the actual function.
   MachineFunction *MF;
 
-  /// \brief The MachineBasicBlock containing the first occurrence of the
-  /// mapping associated with this function.
-  MachineBasicBlock *OccBB;
-
-  /// The start index of the instructions to outline in \p OccBB.
-  size_t StartIdxInBB;
-
-  /// The end index of the instructions to outline in \p OccBB.
-  size_t EndIdxInBB;
-
   /// A number used to identify this function in the outlined program.
   size_t Name;
-
-  /// The number this function will be given in the \p ProgramMapping.
-  size_t Id;
 
   /// The number of times that this function has appeared.
   size_t OccurrenceCount;
 
-  std::vector<unsigned> Str;
+  std::vector<unsigned> Sequence;
 
-  OutlinedFunction(MachineBasicBlock *OccBB_, size_t StartIdxInBB_,
-                   size_t EndIdxInBB_, size_t Name_, size_t Id_,
-                   size_t OccurrenceCount_)
-      : OccBB(OccBB_), StartIdxInBB(StartIdxInBB_), EndIdxInBB(EndIdxInBB_),
-        Name(Name_), Id(Id_), OccurrenceCount(OccurrenceCount_) {}
+  OutlinedFunction(size_t Name_, size_t OccurrenceCount_, std::vector<unsigned> &Sequence_)
+      : Name(Name_), OccurrenceCount(OccurrenceCount_), Sequence(Sequence_) {}
 };
 } // Anonymous namespace.
 
@@ -790,27 +786,29 @@ struct OutlinedFunction {
 struct MachineOutliner : public ModulePass {
   static char ID;
 
-  /// \brief Used to either hash functions or mark them as illegal to outline
-  /// depending on the instruction.
+  /// \brief Maps instructions to integers. Two instructions have the same
+  /// integer if and only if they are identical. Instructions that are
+  /// unsafe to outline are assigned unique integers.
   DenseMap<MachineInstr *, unsigned, MachineInstrExpressionTrait>
       InstructionIntegerMap;
 
-  std::map <unsigned, MachineInstr *> IntegerInstructionMap;
+  /// Maps the integers corresponding to instructions back to instructions.
+  DenseMap<unsigned, MachineInstr *> IntegerInstructionMap;
 
   /// The last value assigned to an instruction we ought not to outline.
   /// Set to -3 to avoid attempting to query the \p DenseMap in
   /// \p SuffixTreeNode for the tombstone and empty keys given by the
   /// unsigned \p DenseMap template specialization.
-  unsigned CurrIllegalInstrMapping = -3;
+  unsigned CurrIllegalInstrCorrespondence = -3;
 
   /// The last value assigned to an instruction we can outline.
-  unsigned CurrLegalInstrMapping = 0;
+  unsigned CurrLegalInstrCorrespondence = 0;
 
   /// The ID of the last function created.
   size_t CurrentFunctionID;
 
   /// The mapping of the program from MachineInstructions to unsigned integers.
-  ProgramMapping Mapping;
+  BlockCorrespondences Correspondence;
 
   StringRef getPassName() const override { return "MIR Function Outlining"; }
 
@@ -837,7 +835,7 @@ struct MachineOutliner : public ModulePass {
   /// \param [out] Container Filled with the instruction-integer mappings for
   /// the program.
   /// \param BB The \p MachineBasicBlock to be translated into integers.
-  void buildInstructionMapping(std::vector<unsigned> &Container,
+  void buildInstructionCorrespondence(std::vector<unsigned> &Container,
                         MachineBasicBlock &BB,
                         const TargetRegisterInfo &TRI,
                         const TargetInstrInfo &TII);
@@ -852,7 +850,7 @@ struct MachineOutliner : public ModulePass {
   bool outline(Module &M, std::vector<MachineBasicBlock *> &Worklist,
                std::vector<Candidate> &CandidateList,
                std::vector<OutlinedFunction> &FunctionList,
-               ProgramMapping &Mapping);
+               BlockCorrespondences &Correspondence);
 
   /// Creates a function for \p OF and inserts it into the program.
   MachineFunction *createOutlinedFunction(Module &M,
@@ -889,7 +887,7 @@ ModulePass *createOutlinerPass() { return new MachineOutliner(); }
 INITIALIZE_PASS(MachineOutliner, "machine-outliner",
                 "Machine Function Outliner", false, false)
 
-void MachineOutliner::buildInstructionMapping(std::vector<unsigned> &Container,
+void MachineOutliner::buildInstructionCorrespondence(std::vector<unsigned> &Container,
                                        MachineBasicBlock &MBB,
                                        const TargetRegisterInfo &TRI,
                                        const TargetInstrInfo &TII) {
@@ -899,14 +897,13 @@ void MachineOutliner::buildInstructionMapping(std::vector<unsigned> &Container,
 
     // If it's not, give it a bad number.
     if (!IsSafeToOutline) {
-      Container.push_back(CurrIllegalInstrMapping);
-      IntegerInstructionMap.insert(std::make_pair(CurrIllegalInstrMapping, &MI));
-      CurrIllegalInstrMapping--;
-      assert(CurrLegalInstrMapping < CurrIllegalInstrMapping &&
+      Container.push_back(CurrIllegalInstrCorrespondence);
+      CurrIllegalInstrCorrespondence--;
+      assert(CurrLegalInstrCorrespondence < CurrIllegalInstrCorrespondence &&
              "Instruction mapping overflow!");
-      assert(CurrIllegalInstrMapping != (unsigned)-1 &&
-             CurrIllegalInstrMapping != (unsigned)-2 &&
-             "Mapping cannot be DenseMap tombstone or empty key!");
+      assert(CurrIllegalInstrCorrespondence != (unsigned)-1 &&
+             CurrIllegalInstrCorrespondence != (unsigned)-2 &&
+             "Correspondence cannot be DenseMap tombstone or empty key!");
       continue;
     }
 
@@ -914,21 +911,24 @@ void MachineOutliner::buildInstructionMapping(std::vector<unsigned> &Container,
     // the map, then give it the previously assigned integer. Otherwise, give
     // it the next available one.
     auto I = InstructionIntegerMap.insert(
-        std::make_pair(&MI, CurrLegalInstrMapping));
-    IntegerInstructionMap.insert(std::make_pair(CurrLegalInstrMapping, &MI));
+        std::make_pair(&MI, CurrLegalInstrCorrespondence));
+    IntegerInstructionMap.insert(std::make_pair(CurrLegalInstrCorrespondence, &MI));
 
     if (I.second)
-      CurrLegalInstrMapping++;
+      CurrLegalInstrCorrespondence++;
 
     unsigned MINumber = I.first->second;
     Container.push_back(MINumber);
     CurrentFunctionID++;
-    assert(CurrLegalInstrMapping < CurrIllegalInstrMapping &&
+    assert(CurrLegalInstrCorrespondence < CurrIllegalInstrCorrespondence &&
            "Instruction mapping overflow!");
-    assert(CurrLegalInstrMapping != (unsigned)-1 &&
-           CurrLegalInstrMapping != (unsigned)-2 &&
-           "Mapping cannot be DenseMap tombstone or empty key!");
+    assert(CurrLegalInstrCorrespondence != (unsigned)-1 &&
+           CurrLegalInstrCorrespondence != (unsigned)-2 &&
+           "Correspondence cannot be DenseMap tombstone or empty key!");
   }
+
+  Container.push_back(CurrIllegalInstrCorrespondence);
+  CurrIllegalInstrCorrespondence--;
 }
 
 void MachineOutliner::buildCandidateList(
@@ -955,8 +955,6 @@ void MachineOutliner::buildCandidateList(
     for (auto ch : CandidateSequence) {
       IntegerInstructionMap.find(ch)->second->dump();
     }
-    errs() << "\n";
-    errs() << "Size: " << CandidateSequence.size() << "\n";
 
     // Query the tree for candidates until we run out of candidates to outline.
     std::vector<std::pair<std::vector<unsigned>, size_t>> Occurrences =
@@ -969,37 +967,26 @@ void MachineOutliner::buildCandidateList(
     // make it a function and keep track of it.
     std::pair<std::vector<unsigned>, size_t> FirstOcc = Occurrences[0];
 
-    // The (flat) start index of the Candidate in the ProgramMapping.
+    // The (flat) start index of the Candidate in the BlockCorrespondences.
     size_t FlatStartIdx = FirstOcc.second;
 
     // Use that to find the index of the string/MachineBasicBlock it appears
     // in and the point that it begins in in that string/MBB.
     std::pair<size_t, size_t> FirstIdxAndOffset =
-        Mapping.locationOf(FlatStartIdx);
+        Correspondence.locationOf(FlatStartIdx);
 
     // From there, we can tell where the mapping starts and ends in the first
     // occurrence so that we can copy it over.
     size_t StartIdxInBB = FirstIdxAndOffset.second;
     size_t EndIdxInBB = StartIdxInBB + CandidateSequence.size() - 1;
+    assert(StartIdxInBB <= EndIdxInBB && "StartIdxInBB was after EndIdxInBB!");
 
-    // Keep track of the MachineBasicBlock and its parent so that we can
-    // copy from it later.
-    MachineBasicBlock *OccBB = Worklist[FirstIdxAndOffset.first];
-    errs() << "OccBB:\n";
-    OccBB->dump();
-    errs() << "\n";
-    errs() << "StartIdxInBB: " << StartIdxInBB << "\n";
-    errs() << "EndIdxInBB: " << EndIdxInBB << "\n";
-
-    FunctionList.push_back(OutlinedFunction(
-        OccBB, StartIdxInBB, EndIdxInBB, FunctionList.size(),
-        CurrentFunctionID, Occurrences.size()));
-    FunctionList.back().Str = CandidateSequence;
+    FunctionList.push_back(OutlinedFunction(FunctionList.size(), Occurrences.size(), CandidateSequence));
 
     // Save each of the occurrences for the outlining process.
     for (auto &Occ : Occurrences) {
       std::pair<size_t, size_t> IdxAndOffset =
-          Mapping.locationOf(Occ.second);
+          Correspondence.locationOf(Occ.second);
 
       CandidateList.push_back(Candidate(
           IdxAndOffset.first,      // Idx of MBB containing candidate.
@@ -1049,40 +1036,26 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   const TargetSubtargetInfo *STI = &(MF.getSubtarget());
   const TargetInstrInfo *TII = STI->getInstrInfo();
 
-  DEBUG(dbgs() << "OF.StartIdxInBB = " << OF.StartIdxInBB << "\n";
-        dbgs() << "OF.EndIdxInBB = " << OF.EndIdxInBB << "\n";);
-
-  // Insert instructions into the function and a custom outlined
-  // prologue/epilogue.
+  // Insert the new function into the program.
   MF.insert(MF.begin(), MBB);
-  TII->insertOutlinerEpilogue(*MBB, MF);
-
-  MachineBasicBlock::iterator It = OF.OccBB->begin();
-  //std::advance(It, OF.EndIdxInBB);
-  for (size_t Idx = OF.Str.size()-1; Idx != 0; Idx--) {
-    MachineInstr *MI = MF.CloneMachineInstr(IntegerInstructionMap.find(OF.Str[Idx])->second);
-    MI->dropMemRefs();
-    MBB->insert(MBB->begin(), MI);
-  }
-
-  /*
-  for (size_t i = 0, e = OF.EndIdxInBB - OF.StartIdxInBB + 1; i != e; i++) {
-    MachineInstr *MI = MF.CloneMachineInstr(&*It);
-
-    // Each cloned memory operand references the old function.
-    // Drop the references.
-    MI->dropMemRefs();
-
-    MBB->insert(MBB->begin(), MI);
-    It--;
-  }
-  */
 
   TII->insertOutlinerPrologue(*MBB, MF);
 
-  DEBUG(dbgs() << "New function: \n"; dbgs() << *Name << ":\n";
-        for (MachineBasicBlock &MBB
-             : MF) MBB.dump(););
+  // Copy over the instructions for the function using the integer mappings in
+  // its sequence.
+  for (unsigned Correspondence : OF.Sequence) {
+    MachineInstr *MI = MF.CloneMachineInstr(IntegerInstructionMap.find(Correspondence)->second);
+    MI->dropMemRefs();
+    MBB->insert(MBB->end(), MI);
+  }
+
+  TII->insertOutlinerEpilogue(*MBB, MF);
+
+  DEBUG(
+        dbgs() << "New function: \n"; dbgs() << *Name << ":\n";
+        for (MachineBasicBlock &MBB : MF)
+          MBB.dump();
+       );
 
   return &MF;
 }
@@ -1091,7 +1064,7 @@ bool MachineOutliner::outline(Module &M,
                               std::vector<MachineBasicBlock *> &Worklist,
                               std::vector<Candidate> &CandidateList,
                               std::vector<OutlinedFunction> &FunctionList,
-                              ProgramMapping &Mapping) {
+                              BlockCorrespondences &Correspondence) {
   bool OutlinedSomething = false;
 
   // Create an outlined function for each candidate.
@@ -1111,9 +1084,13 @@ bool MachineOutliner::outline(Module &M,
 
     size_t StartIdx = C.StartIdxInMBB;
     size_t EndIdx = StartIdx + C.Len;
+    assert(StartIdx <= EndIdx && "StartIdx can't be after EndIdx!");
+    MachineBasicBlock *MBB = Worklist[C.IdxOfMBB];
 
-    // If the index is below 0, then we must have already outlined from it.
-    bool AlreadyOutlinedFrom = EndIdx - StartIdx > C.Len;
+    // If a block's already been outlined from at a point we want to outline from
+    // then we should quit. We know this has happened for sure if the basic
+    // block is too small to outline the candidate from.
+    bool AlreadyOutlinedFrom = (EndIdx >= MBB->size());
 
     // Check if we have any different characters in the mapping collection versus
     // the mapping we want to outline. If so, then we must have already outlined
@@ -1121,7 +1098,7 @@ bool MachineOutliner::outline(Module &M,
     if (!AlreadyOutlinedFrom) {
       for (size_t i = StartIdx; i < EndIdx; i++) {
         size_t j = i - StartIdx;
-        if (Mapping.MBBMappings[C.IdxOfMBB][i] != C.Str[j]) {
+        if (Correspondence.MBBCorrespondences[C.IdxOfMBB][i] != C.Str[j]) {
           FunctionList[C.FunctionIdx].OccurrenceCount--;
           AlreadyOutlinedFrom = true;
           break;
@@ -1143,7 +1120,14 @@ bool MachineOutliner::outline(Module &M,
     // Note that we don't have to do this from the mapped sequence because we
     // sorted our candidates.
     MachineFunction *MF = FunctionList[C.FunctionIdx].MF;
-    MachineBasicBlock *MBB = Worklist[C.IdxOfMBB];
+    
+    errs() << "Candidate: \n";
+    for (auto ch : C.Str) {
+      IntegerInstructionMap[ch]->dump();
+    }
+
+    MBB->dump();
+
     const TargetSubtargetInfo *STI = &(MF->getSubtarget());
     const TargetInstrInfo *TII = STI->getInstrInfo();
 
@@ -1153,6 +1137,7 @@ bool MachineOutliner::outline(Module &M,
 
     std::advance(StartIt, StartIdx);
     std::advance(EndIt, EndIdx);
+
     StartIt = TII->insertOutlinedCall(M, *MBB, StartIt, *MF);
     ++StartIt;
     MBB->erase(StartIt, EndIt);
@@ -1162,9 +1147,13 @@ bool MachineOutliner::outline(Module &M,
 }
 
 bool MachineOutliner::runOnModule(Module &M) {
+
+  // Don't outline from a module that doesn't contain any functions.
+  if (M.empty())
+    return false;
+
   MachineModuleInfo &MMI = getAnalysis<MachineModuleInfo>();
   std::vector<MachineBasicBlock *> Worklist;
-
   const TargetSubtargetInfo *STI =
       &(MMI.getMachineFunction(*M.begin()).getSubtarget());
   const TargetRegisterInfo *TRI = STI->getRegisterInfo();
@@ -1182,14 +1171,19 @@ bool MachineOutliner::runOnModule(Module &M) {
       continue;
 
     for (MachineBasicBlock &MBB : MF) {
+
+      // Don't outline from empty MachineBasicBlocks.
+      if (MBB.empty())
+        continue;
+
       Worklist.push_back(&MBB);
       std::vector<unsigned> Container;
-      buildInstructionMapping(Container, MBB, *TRI, *TII);
-      Mapping.MBBMappings.push_back(Container);
+      buildInstructionCorrespondence(Container, MBB, *TRI, *TII);
+      Correspondence.MBBCorrespondences.push_back(Container);
     }
   }
 
-  SuffixTree ST(Mapping);
+  SuffixTree ST(Correspondence);
 
   // Find all of the candidates for outlining and then outline them.
   bool OutlinedSomething = false;
@@ -1199,7 +1193,7 @@ bool MachineOutliner::runOnModule(Module &M) {
   CurrentFunctionID = InstructionIntegerMap.size();
   buildCandidateList(CandidateList, FunctionList, Worklist, ST);
   OutlinedSomething =
-      outline(M, Worklist, CandidateList, FunctionList, Mapping);
+      outline(M, Worklist, CandidateList, FunctionList, Correspondence);
 
   return OutlinedSomething;
 }
