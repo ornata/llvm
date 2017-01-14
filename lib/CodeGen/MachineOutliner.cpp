@@ -67,108 +67,6 @@ namespace {
 
 const size_t EmptyIdx = -1; /// Represents an undefined index.
 
-/// \brief Stores the integers that are used to represent instructions
-/// throughout the module. Each integer in \p BlockCorrespondences corresponds
-/// to some integer in the program. Each \p vector in BlockCorrespondences
-/// corresponds to a \p MachineBasicBlock.
-///
-/// The outliner works by putting every instruction in the module in
-/// many-one (but sometimes 1-1!) correspondence with an integer. A suffix tree
-/// is then used to find repeated sequences of such integers. Suffix trees
-/// require "strings" to work: that is, finite sequences of comparable objects.
-///
-/// For the sake of simplicity, "sequence" and "the sequence of correspondences
-/// between instructions and integers which corresponds to some 
-/// \p MachineBasicBlock" will be used interchangably.
-///
-/// We could put the "integer correspondences" in a single, long vector and
-/// then query the tree for repeated sequences of those correspondences.
-/// However, we need to eventually remove all instances of those sequences from
-/// the module.
-///
-/// The suffix tree can tell us about where in the entire vector any
-/// integer appears. However, this isn't enough: we need to know where in the
-/// module the corresponding instruction appears. In order to get around this,
-/// the \p BlockCorrespondences struct stores vectors for every
-/// \p MachineBasicBlock in the module. The suffix tree uses the
-/// \p BlockCorrespondences struct as if it was a single "flat" vector in order
-/// to generate a list of candidates. The outlining pass then uses the \p
-/// BlockCorrespondences struct to find out which \p MachineBasicBlocks contain
-/// each candidate so that they can actually be outlined.
-///
-/// For the sake of example, let's say we have a \p BlockCorrespondences struct
-/// which looks like this:
-///
-/// [[0,1,2][3,4][5,6,7][8,9,10]]
-///
-/// Then the suffix tree would see the 3rd element of this correspondence as
-/// "3". We might want to see where "3" comes from. We can then query the
-/// \p BlockCorrespondences struct for where "3" comes from, and it would tell
-/// us it appears at correspondence 1, at offset 0. From this, if we store a
-/// working list of \p MachineBasicBlocks oredered such that MBB[i] is in
-/// correspondence with the i-th correspondence, we know that the instruction
-/// corresponding with "3" is the 0th instruction in MBB[1].
-struct BlockCorrespondences {
-
-  /// \brief Stores mappings between \p MachineBasicBlocks and \p vectors of
-  /// \p unsigneds.
-  ///
-  /// The i-th vector corresponds to the i-th \p MachineBasicBlock in the
-  /// module. Each integer corresponds to an instruction. Instructions that may
-  /// be outlined are given a hash. Instructions that may not be outlined are
-  /// given an unique integer so that they cannot be found in a repeated
-  /// substring.
-  std::vector<std::vector<unsigned>> MBBCorrespondences;
-
-  /// \brief Returns the pair of indices that a flattened index corresponds to
-  /// in \p MBBCorrespondences.
-  /// 
-  /// \param Offset The flattened index.
-  ///
-  /// \returns A \p std::pair whose first element is the index of the vector
-  /// in \p MBBCorrespondences containing \p Offset and whose second element is the
-  /// index of the element that \p Offset corresponds to in that mapping.
-  std::pair<size_t, size_t> locationOf(size_t Offset) {
-    size_t CorrespondenceIdx;
-    size_t NumCorrespondences = MBBCorrespondences.size() - 1;
-
-    for (CorrespondenceIdx = 0; CorrespondenceIdx < NumCorrespondences; CorrespondenceIdx++) {
-
-      // First, get the size of the mapping we're currently looking at.
-      size_t CurrCorrespondenceSize = MBBCorrespondences[CorrespondenceIdx].size();
-      // Now check if the offset is *less* than CurrCorrespondenceSize.
-      // If this is true, then the offset lies inside the current mapping.
-      if (Offset < CurrCorrespondenceSize)
-        break;
-
-      // Otherwise, move over to the next string.
-      Offset -= CurrCorrespondenceSize;
-    }
-
-    // The offset should always be inside some basic block.
-    assert(Offset < MBBCorrespondences[CorrespondenceIdx].size());
-
-    // We should always stop before we hit MBBCorrespondences.size() since we're
-    // always looking for offsets that exist.
-    assert(CorrespondenceIdx < MBBCorrespondences.size() && "Correspondence index out of bounds!");
-
-    return std::make_pair(CorrespondenceIdx, Offset);
-  }
-
-  /// Returns the element of \p BlockCorrespondences as a 2D mapping at \p QueryIdx.
-  unsigned elementAt(size_t QueryIdx) {
-    std::pair<size_t, size_t> IndexAndOffset = locationOf(QueryIdx);
-    return MBBCorrespondences[IndexAndOffset.first][IndexAndOffset.second];
-  }
-
-  /// Returns the mapping that contains the index \p QueryIdx in the
-  /// \p BlockCorrespondences \p BlockCorrespondences and the offset into that mapping that
-  /// \p QueryIdx maps to.
-  std::vector<unsigned> &mappingContaining(size_t QueryIdx) {
-    return MBBCorrespondences[locationOf(QueryIdx).first];
-  }
-};
-
 /// A node in a suffix tree which represents a substring or suffix.
 ///
 /// Each node has either no children or at least two children, with the root
@@ -197,7 +95,7 @@ struct SuffixTreeNode {
   DenseMap<unsigned, SuffixTreeNode *> Children;
 
   /// A flag set to false if the node has been pruned from the tree.
-  bool IsInTree = false;
+  bool IsInTree = true;
 
   /// The start index of this node's substring in the main string.
   size_t StartIdx = EmptyIdx;
@@ -390,14 +288,8 @@ private:
     }
 
     if (IsLeaf) {
-      Leaves.push_back();
       CurrentNode.SuffixIdx = Correspondence.size() - LabelHeight;
       CurrentNode.Parent->OccurrenceCount++;
-      CurrentNode->IsInTree = true;
-
-      // We only want to query the tree for repeated strings.
-      if (CurrentNode.Parent->OccurrenceCount >= 2)
-        CurrentNode.Parent->IsInTree = true;
     }
   }
 
@@ -517,58 +409,6 @@ private:
 
 public:
 
-  /// \brief Traverse the tree depth-first and return the node whose substring
-  /// is longest and appears at least twice.
-  ///
-  /// \param Node The current node being visited in the traversal.
-  /// \param LabelHeight The length of the node currently being visited.
-  /// \param MaxLen [in, out] The length of the longest repeated substring.
-  /// \param SubstringStartIdx [in, out] The start index of the first
-  /// occurrence of the longest repeated substring found during the query.
-  void longestRepeatedNode(SuffixTreeNode &N, size_t LabelHeight,
-                           size_t &MaxLen, size_t &StartIdx) {
-    if (!N.IsInTree)
-      return;
-
-    // We hit an internal node, so we can traverse further down the tree.
-    // For each child, traverse down as far as possible and set MaxHeight
-    if (!N.isLeaf()) {
-      for (auto &ChildPair : N.Children) {
-        if (ChildPair.second && ChildPair.second->IsInTree)
-          longestRepeatedNode(*ChildPair.second,
-                              LabelHeight + ChildPair.second->size(),
-                              MaxLen,
-                              StartIdx);
-      }
-    }
-
-    // We hit a leaf, so update MaxHeight if we've gone further down the
-    // tree
-    else if (N.isLeaf() && N.Parent != Root && MaxLen < (LabelHeight - N.size())) {
-      MaxLen = LabelHeight - N.size();
-      StartIdx = N.SuffixIdx;
-    }
-  }
-
-  /// \brief Return a \p vector representing the longest substring of \p
-  /// Correspondence which is repeated at least one time.
-  ///
-  /// Returns an empty vector if no such mapping exists.
-  std::vector<unsigned> longestRepeatedSubstring() {
-    size_t MaxHeight = 0;
-    size_t FirstChar = 0;
-    SuffixTreeNode &N = *Root;
-
-    longestRepeatedNode(N, 0, MaxHeight, FirstChar);
-    std::vector<unsigned> Longest;
-
-    for (size_t Idx = 0; Idx < MaxHeight; Idx++)
-      Longest.push_back(Correspondence[Idx + FirstChar]);
-
-    return Longest;
-  }
-
-
   void findBest(SuffixTreeNode &N, size_t LabelHeight, size_t &MaxLen,
                            size_t &MaxBenefit, size_t &StartIdx) {
     if (!N.IsInTree)
@@ -606,19 +446,17 @@ public:
     }
   }
 
-  std::vector<unsigned> bestRepeatedSubstring() {
+  void bestRepeatedSubstring(std::vector<unsigned> &Best) {
     size_t Length = 0;
     size_t Benefit = 0;
     size_t FirstChar = 0;
     SuffixTreeNode &N = *Root;
 
     findBest(N, 0, Length, Benefit, FirstChar);
-    std::vector<unsigned> Best;
+    Best.clear();
 
     for (size_t Idx = 0; Idx < Length; Idx++)
       Best.push_back(Correspondence[Idx + FirstChar]);
-
-    return Best;
   }
 
   /// Perform a depth-first search for \p QueryString on the suffix tree.
@@ -683,8 +521,7 @@ public:
   /// suffixes of that node's string.
   ///
   /// This is used in the outlining algorithm to reduce the number of
-  /// overlapping candidates.
-  /*
+  /// overlapping candidates
   void prune(SuffixTreeNode *N) {
     N->IsInTree = false;
 
@@ -696,15 +533,13 @@ public:
 
       T->IsInTree = T->OccurrenceCount > 1;
     }
-*/
+
     // We removed every occurrence of the string associated with N, so every
     // string it is a proper suffix of is no longer a candidate.
-    /*
     for (SuffixTreeNode *T = N->BackLink; T && T != Root; T = T->BackLink) {
       T->OccurrenceCount = 0;
       T->IsInTree = false;
     }
-    */
 
     N->OccurrenceCount = 0;
   }
@@ -789,42 +624,25 @@ public:
 /// \brief An individual sequence of instructions to be replaced with a call
 /// to an outlined function.
 struct Candidate {
-  /// \brief The index of the \p MachineBasicBlock in the worklist containing
-  /// the first occurrence of this \p Candidate.
-  size_t IdxOfMBB;
 
-  /// \brief The start index of this candidate in its containing
-  /// \p MachineBasicBlock.
-  size_t StartIdxInMBB;
+  /// \brief The start index of this \p Candidate.
+  size_t StartIdx;
 
   /// The number of instructions in this \p Candidate.
   size_t Len;
-
-  /// \brief The flat start index of this Candidate's sequence of instructions
-  /// in the \p BlockCorrespondences.
-  size_t FlatCorrespondenceStartIdx;
 
   /// The index of this \p Candidate's \p OutlinedFunction in the list of
   /// \p OutlinedFunctions.
   size_t FunctionIdx;
 
-  /// Represents the sequence of instructions that will be outlined.
-  ///
-  /// Stored to ensure that the current candidate isn't being outlined from
-  /// somewhere that has already been outlined from.
-  std::vector<unsigned> Str;
-
-  Candidate(size_t IdxOfMBB_, size_t StartIdxInMBB_, size_t Len_,
-            size_t FlatCorrespondenceStartIdx_, size_t FunctionIdx_,
-            std::vector<unsigned> Str_)
-      : IdxOfMBB(IdxOfMBB_), StartIdxInMBB(StartIdxInMBB_), Len(Len_),
-        FlatCorrespondenceStartIdx(FlatCorrespondenceStartIdx_), FunctionIdx(FunctionIdx_),
-        Str(Str_) {}
+  Candidate(size_t StartIdx_, size_t Len_, size_t FunctionIdx_)
+      : StartIdx(StartIdx_), Len(Len_), FunctionIdx(FunctionIdx_)
+      {}
 
   /// \brief Used to ensure that \p Candidates are outlined in an order that
   /// preserves the start and end indices of other \p Candidates.
   bool operator<(const Candidate &rhs) const {
-    return FlatCorrespondenceStartIdx > rhs.FlatCorrespondenceStartIdx;
+    return StartIdx > rhs.StartIdx;
   }
 };
 
@@ -843,7 +661,7 @@ struct OutlinedFunction {
 
   std::vector<unsigned> Sequence;
 
-  OutlinedFunction(size_t Name_, size_t OccurrenceCount_, std::vector<unsigned> &Sequence_)
+  OutlinedFunction(size_t Name_, size_t OccurrenceCount_, const std::vector<unsigned> &Sequence_)
       : Name(Name_), OccurrenceCount(OccurrenceCount_), Sequence(Sequence_) {}
 };
 } // Anonymous namespace.
@@ -881,9 +699,6 @@ struct MachineOutliner : public ModulePass {
   /// The ID of the last function created.
   size_t CurrentFunctionID;
 
-  /// The mapping of the program from MachineInstructions to unsigned integers.
-  BlockCorrespondences Correspondence;
-
   StringRef getPassName() const override { return "MIR Function Outlining"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -910,6 +725,7 @@ struct MachineOutliner : public ModulePass {
   /// the program.
   /// \param BB The \p MachineBasicBlock to be translated into integers.
   void buildInstructionCorrespondence(std::vector<unsigned> &Container,
+                        std::vector<MachineBasicBlock::iterator> &InstrList,
                         MachineBasicBlock &BB,
                         const TargetRegisterInfo &TRI,
                         const TargetInstrInfo &TII);
@@ -918,13 +734,11 @@ struct MachineOutliner : public ModulePass {
   /// \p Candidates in \p CandidateList with calls to \p MachineFunctions
   /// described in \p FunctionList.
   ///
-  /// \param Worklist The basic blocks in the program in order of appearance.
   /// \param CandidateList A list of candidates to be outlined.
   /// \param FunctionList A list of functions to be inserted into the program.
-  bool outline(Module &M, std::vector<MachineBasicBlock *> &Worklist,
+  bool outline(Module &M, std::vector<MachineBasicBlock::iterator> &InstrList,
                std::vector<Candidate> &CandidateList,
-               std::vector<OutlinedFunction> &FunctionList,
-               BlockCorrespondences &Correspondence);
+               std::vector<OutlinedFunction> &FunctionList);
 
   /// Creates a function for \p OF and inserts it into the program.
   MachineFunction *createOutlinedFunction(Module &M,
@@ -940,11 +754,9 @@ struct MachineOutliner : public ModulePass {
   /// module.
   /// \param [out] FunctionList Filled with functions corresponding to each
   /// type of \p Candidate.
-  /// \param WorkList The basic blocks in the program in order of appearance.
   /// \param ST The suffix tree for the program.
   void buildCandidateList(std::vector<Candidate> &CandidateList,
                           std::vector<OutlinedFunction> &FunctionList,
-                          std::vector<MachineBasicBlock *> &Worklist,
                           SuffixTree &ST);
 
   /// Construct a suffix tree on the instructions in \p M and outline repeated
@@ -962,12 +774,15 @@ INITIALIZE_PASS(MachineOutliner, "machine-outliner",
                 "Machine Function Outliner", false, false)
 
 void MachineOutliner::buildInstructionCorrespondence(std::vector<unsigned> &Container,
+                                       std::vector<MachineBasicBlock::iterator> &InstrList,
                                        MachineBasicBlock &MBB,
                                        const TargetRegisterInfo &TRI,
                                        const TargetInstrInfo &TII) {
-  for (MachineInstr &MI : MBB) {
+  for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end(); It != Et; It++) {
+    MachineInstr& MI = *It;
     // First, check if the current instruction is legal to outline at all.
     bool IsSafeToOutline = TII.isLegalToOutline(MI);
+    InstrList.push_back(It);
 
     // If it's not, give it a bad number.
     if (!IsSafeToOutline) {
@@ -1001,6 +816,7 @@ void MachineOutliner::buildInstructionCorrespondence(std::vector<unsigned> &Cont
            "Correspondence cannot be DenseMap tombstone or empty key!");
   }
 
+  InstrList.push_back(nullptr);
   Container.push_back(CurrIllegalInstrCorrespondence);
   CurrIllegalInstrCorrespondence--;
 }
@@ -1008,24 +824,14 @@ void MachineOutliner::buildInstructionCorrespondence(std::vector<unsigned> &Cont
 void MachineOutliner::buildCandidateList(
     std::vector<Candidate> &CandidateList,
     std::vector<OutlinedFunction> &FunctionList,
-    std::vector<MachineBasicBlock *> &Worklist, SuffixTree &ST) {
+    SuffixTree &ST) {
 
-  // TODO: It would be better to use a "most beneficial substring" query if we
-  // decide to be a bit smarter and use a dynamic programming approximation
-  // scheme. For a naive greedy choice, LRS and MBS appear to be about as
-  // effective as each other. This is because both can knock out a candidate
-  // that would be better, or would lead to a better combination of candidates
-  // being chosen.
-  // FIXME: Use the following cost model.
-  // Weight = Occurrences * length
-  // Benefit = Weight - [Len(outline prologue) + Len(outline epilogue) +
-  // Len(functon call)]
+  std::vector<unsigned> CandidateSequence;
 
-  for (std::vector<unsigned> CandidateSequence = ST.bestRepeatedSubstring();
+  for (ST.bestRepeatedSubstring(CandidateSequence);
        CandidateSequence.size() >= 2;
-       CandidateSequence = ST.bestRepeatedSubstring()) {
+       ST.bestRepeatedSubstring(CandidateSequence)) {
 
-    // Query the tree for candidates until we run out of candidates to outline.
     std::vector<size_t> Occurrences =
     ST.findOccurrencesAndPrune(CandidateSequence); 
 
@@ -1036,16 +842,10 @@ void MachineOutliner::buildCandidateList(
 
     // Save each of the occurrences for the outlining process.
     for (size_t &Occ : Occurrences) {
-      std::pair<size_t, size_t> IdxAndOffset =
-          Correspondence.locationOf(Occ);
-
       CandidateList.push_back(Candidate(
-          IdxAndOffset.first,      // Idx of MBB containing candidate.
-          IdxAndOffset.second,     // Starting idx in that MBB.
+          Occ,                      // Starting idx in that MBB.
           CandidateSequence.size(),  // Candidate length.
-          Occ,              // Start index in the full string.
-          FunctionList.size() - 1, // Idx of the corresponding function.
-          CandidateSequence          // The actual string.
+          FunctionList.size() - 1 // Idx of the corresponding function.
           ));
     }
 
@@ -1095,8 +895,6 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   // Copy over the instructions for the function using the integer mappings in
   // its sequence.
   for (unsigned Correspondence : OF.Sequence) {
-    MachineInstr *MI = IntegerInstructionMap.find(Correspondence)->second;
-    assert(TII->isLegalToOutline(*MI) && "Instruction isn't legal!");
     MachineInstr *NewMI = MF.CloneMachineInstr(IntegerInstructionMap.find(Correspondence)->second);
     NewMI->dropMemRefs();
     MBB->insert(MBB->end(), NewMI);
@@ -1114,10 +912,9 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 }
 
 bool MachineOutliner::outline(Module &M,
-                              std::vector<MachineBasicBlock *> &Worklist,
+                              std::vector<MachineBasicBlock::iterator> &InstrList,
                               std::vector<Candidate> &CandidateList,
-                              std::vector<OutlinedFunction> &FunctionList,
-                              BlockCorrespondences &Correspondence) {
+                              std::vector<OutlinedFunction> &FunctionList) {
   bool OutlinedSomething = false;
 
   // Create an outlined function for each candidate.
@@ -1135,29 +932,12 @@ bool MachineOutliner::outline(Module &M,
   // This should be done *before* we create the outlined functions.
   for (const Candidate &C : CandidateList) {
 
-    size_t StartIdx = C.StartIdxInMBB;
-    size_t EndIdx = StartIdx + C.Len;
-    assert(StartIdx <= EndIdx && "StartIdx can't be after EndIdx!");
-    MachineBasicBlock *MBB = Worklist[C.IdxOfMBB];
-
+    MachineBasicBlock *MBB = (*InstrList[C.StartIdx]).getParent();
+    size_t EndIdx = C.StartIdx + C.Len;
     // If a block's already been outlined from at a point we want to outline from
     // then we should quit. We know this has happened for sure if the basic
     // block is too small to outline the candidate from.
     bool AlreadyOutlinedFrom = (EndIdx >= MBB->size());
-
-    // Check if we have any different characters in the mapping collection versus
-    // the mapping we want to outline. If so, then we must have already outlined
-    // from the spot this candidate appeared at.
-    if (!AlreadyOutlinedFrom) {
-      for (size_t i = StartIdx; i < EndIdx; i++) {
-        size_t j = i - StartIdx;
-        if (Correspondence.MBBCorrespondences[C.IdxOfMBB][i] != C.Str[j]) {
-          FunctionList[C.FunctionIdx].OccurrenceCount--;
-          AlreadyOutlinedFrom = true;
-          break;
-        }
-      }
-    }
 
     // If we've outlined from this spot, or we don't have enough occurrences to
     // justify outlining stuff, then skip this candidate.
@@ -1178,11 +958,9 @@ bool MachineOutliner::outline(Module &M,
     const TargetInstrInfo *TII = STI->getInstrInfo();
 
     // Now, insert the function name and delete the instructions we don't need.
-    MachineBasicBlock::iterator StartIt = MBB->begin();
+    MachineBasicBlock::iterator StartIt = InstrList[C.StartIdx];
     MachineBasicBlock::iterator EndIt = StartIt;
-
-    std::advance(StartIt, StartIdx);
-    std::advance(EndIt, EndIdx);
+    std::advance(EndIt, C.Len);
 
     StartIt = TII->insertOutlinedCall(M, *MBB, StartIt, *MF);
     ++StartIt;
@@ -1199,7 +977,6 @@ bool MachineOutliner::runOnModule(Module &M) {
     return false;
 
   MachineModuleInfo &MMI = getAnalysis<MachineModuleInfo>();
-  std::vector<MachineBasicBlock *> Worklist;
   const TargetSubtargetInfo *STI =
       &(MMI.getMachineFunction(*M.begin()).getSubtarget());
   const TargetRegisterInfo *TRI = STI->getRegisterInfo();
@@ -1210,7 +987,8 @@ bool MachineOutliner::runOnModule(Module &M) {
   // in the work list correspond to each other. It also means that the
   // j-th unsigned in that mapping and the j-th instruction in that
   // MBB correspond with each other.
-  std::vector<unsigned> SuffixTreeCorrespondence;
+  std::vector<unsigned> Container;
+  std::vector<MachineBasicBlock::iterator> InstrList;
 
   for (Function &F : M) {
     MachineFunction &MF = MMI.getMachineFunction(F);
@@ -1224,17 +1002,11 @@ bool MachineOutliner::runOnModule(Module &M) {
       if (MBB.empty())
         continue;
 
-      Worklist.push_back(&MBB);
-      std::vector<unsigned> Container;
-      buildInstructionCorrespondence(Container, MBB, *TRI, *TII);
-      Correspondence.MBBCorrespondences.push_back(Container);
-
-      for (auto &x : Container)
-        SuffixTreeCorrespondence.push_back(x);
+      buildInstructionCorrespondence(Container, InstrList, MBB, *TRI, *TII);
     }
   }
 
-  SuffixTree ST(SuffixTreeCorrespondence);
+  SuffixTree ST(Container);
 
   // Find all of the candidates for outlining and then outline them.
   bool OutlinedSomething = false;
@@ -1242,9 +1014,9 @@ bool MachineOutliner::runOnModule(Module &M) {
   std::vector<OutlinedFunction> FunctionList;
 
   CurrentFunctionID = InstructionIntegerMap.size();
-  buildCandidateList(CandidateList, FunctionList, Worklist, ST);
+  buildCandidateList(CandidateList, FunctionList, ST);
   OutlinedSomething =
-      outline(M, Worklist, CandidateList, FunctionList, Correspondence);
+      outline(M, InstrList, CandidateList, FunctionList);
 
   if (OutlinedSomething) errs() << "********** Outlined something!\n";
   return OutlinedSomething;
