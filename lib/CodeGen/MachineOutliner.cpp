@@ -35,9 +35,10 @@
 ///
 /// http://lists.llvm.org/pipermail/llvm-dev/2016-August/104170.html
 ///
+/// For more information on the suffix tree data structure, please see
+/// https://www.cs.helsinki.fi/u/ukkonen/SuffixT1withFigs.pdf
+///
 //===----------------------------------------------------------------------===//
-
-#define DEBUG_TYPE "machine-outliner"
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/Twine.h"
@@ -45,7 +46,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
-#include "llvm/CodeGen/passes.h"
+#include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Debug.h"
@@ -58,10 +59,12 @@
 #include <sstream>
 #include <vector>
 
+#define DEBUG_TYPE "machine-outliner"
+
 using namespace llvm;
 
-STATISTIC(NumOutlinedStat, "Number of candidates outlined");
-STATISTIC(FunctionsCreatedStat, "Number of functions created");
+STATISTIC(NumOutlined, "Number of candidates outlined");
+STATISTIC(FunctionsCreated, "Number of functions created");
 
 namespace {
 
@@ -83,9 +86,6 @@ const size_t EmptyIdx = -1; /// Represents an undefined index.
 /// in \p Link. Each leaf node stores the start index of its respective
 /// suffix in \p SuffixIdx.
 struct SuffixTreeNode {
-
-  /// The parent of this node. Every node except for the root has a parent.
-  SuffixTreeNode *Parent = nullptr;
 
   /// The children of this node.
   ///
@@ -113,7 +113,7 @@ struct SuffixTreeNode {
   size_t SuffixIdx = EmptyIdx;
 
   /// \brief For internal nodes, a pointer to the internal node representing
-  /// the same mapping with the first character chopped off.
+  /// the same sequence with the first character chopped off.
   ///
   /// This has two major purposes in the suffix tree. The first is as a
   /// shortcut in Ukkonen's construction algorithm. One of the things that
@@ -133,31 +133,64 @@ struct SuffixTreeNode {
   /// construction algorithm O(N^2) rather than O(N).
   ///
   /// The suffix link is also used during the tree pruning process to let us
-  /// quickly throw out a bunch of potential overlaps. Say we have a mapping
+  /// quickly throw out a bunch of potential overlaps. Say we have a sequence
   /// S we want to outline. Then each of its suffixes contribute to at least
   /// one overlapping case. Therefore, we can follow the suffix links
   /// starting at the node associated with S to the root and "delete" those
   /// nodes, save for the root. For each candidate, this removes
-  /// O(|candidate|) overlaps from the search space.
+  /// O(|candidate|) overlaps from the search space. We don't actually
+  /// completely invalidate these nodes though; doing that is far too
+  /// aggressive. Consider the following pathological string:
+  ///
+  /// 1 2 3 1 2 3 2 3 2 3 2 3 2 3 2 3 2 3
+  ///
+  /// If we, for the sake of example, outlined 1 2 3, then we would throw
+  /// out all instances of 2 3. This isn't desirable. To get around this,
+  /// when we visit a link node, we decrement its occurrence count by the
+  /// number of sequences we outlined in the current step. In the pathological
+  /// example, the 2 3 node would have an occurrence count of 8, while the
+  /// 1 2 3 node would have an occurrence count of 2. Thus, the 2 3 node
+  /// would survive to the next round allowing us to outline the extra
+  /// instances of 2 3.
   SuffixTreeNode *Link = nullptr;
 
+  /// \brief For internal nodes, a pointer from the internal node representing
+  /// the same sequence with the first character chopped off.
+  ///
+  /// This is used during the pruning process. If a node N has a backlink
+  /// from a node M, then N is a proper suffix of M. Thus, if we outline all
+  /// instances of N, then it can never be the case that we can outline a
+  /// non-overlapping instance of M. Therefore, we can remove all such nodes
+  /// from the tree at the end of the round of outlining.
   SuffixTreeNode *BackLink = nullptr;
 
+  /// The parent of this node. Every node except for the root has a parent.
+  SuffixTreeNode *Parent = nullptr;
+
+  /// The number of times this node's string appears in the tree.
+  ///
+  /// This is equal to the number of leaf children of the string. It represents
+  /// the number of suffixes that the node's string is a prefix of.
   size_t OccurrenceCount = 0;
 
-  SuffixTreeNode(size_t StartIdx_, size_t *EndIdx_, SuffixTreeNode *Link_)
-      : StartIdx(StartIdx_), EndIdx(EndIdx_), Link(Link_) {}
+  SuffixTreeNode(size_t StartIdx_, size_t *EndIdx_, SuffixTreeNode *Link_,
+                 SuffixTreeNode *Parent_) :
+                 StartIdx(StartIdx_), EndIdx(EndIdx_), Link(Link_),
+                 Parent(Parent_) 
+                 {}
 
   SuffixTreeNode() {}
 
   /// The length of the substring associated with this node.
   size_t size() {
-    size_t SubstringLen = 0;
+    if (StartIdx == EmptyIdx)
+      return 0;
 
-    if (StartIdx != EmptyIdx)
-      SubstringLen = *EndIdx - StartIdx + 1;
+    assert(*EndIdx != EmptyIdx && "EndIdx is undefined!");
 
-    return SubstringLen;
+    // Length = the number of elements in the string.
+    // For example, [0 1 2 3] has length 4, not 3.
+    return *EndIdx - StartIdx + 1;
   }
 
   /// Returns true if this node is a leaf.
@@ -167,27 +200,17 @@ struct SuffixTreeNode {
 };
 
 
-/// \brief Helper struct which keeps track of the next insertion point in
-/// Ukkonen's algorithm.
-struct ActiveState {
-
-  /// The next node to insert at.
-  SuffixTreeNode *Node;
-
-  /// The index of the first character in the substring currently being added.
-  size_t Idx = EmptyIdx;
-
-  /// The length of the substring we have to add at the current step.
-  size_t Len = 0;
-};
-
-/*****************************************************************************/
-
 /// A data structure for fast substring queries.
 ///
-/// Suffix trees contain the suffixes of their input strings in their leaves.
-/// This property makes it possible to quickly determine long repeated
-/// substrings of strings.
+/// Suffix trees represent the suffixes of their input strings in their leaves.
+/// A suffix tree is a type of compressed trie structure where each node
+/// represents an entire substring rather than a single character. Each leaf
+/// of the tree is a suffix.
+///
+/// A suffix tree can be seen as a type of state machine where each state is a
+/// substring of the full string. The tree is structured so that, for a string
+/// of length N, there are exactly N leaves in the tree. This structure allows
+/// us to quickly find repeated substrings of the input string.
 ///
 /// In this implementation, a "string" is a vector of unsigned integers.
 /// These integers may result from hashing some data type. A suffix tree can
@@ -199,19 +222,21 @@ struct ActiveState {
 /// paper is available at
 ///
 /// https://www.cs.helsinki.fi/u/ukkonen/SuffixT1withFigs.pdf
-///
-/// Note that despite the main structure being a tree, the implementation
-/// of the suffix tree really forms a digraph due to the suffix links
-/// between internal nodes. Furthermore, if suffix links are present, there is
-/// a directed cycle in the digraph due to nodes having suffix links to the
-/// root.
 class SuffixTree {
+
 private:
+
+  /// Each element is an integer representing an instruction in the module.
+  std::vector<unsigned> Str;
+
   /// Maintains each node in the tree.
-  ///
-  /// Note that because this is a bump pointer allocator, we don't have to
-  /// manually delete the nodes in the tree.
   BumpPtrAllocator NodeAllocator;
+
+  /// The root of the suffix tree.
+  ///
+  /// The root represents the empty string. It is maintained by the
+  /// \p NodeAllocator like every other node in the tree.
+  SuffixTreeNode *Root = nullptr;
 
   /// Maintains the end indices of the internal nodes in the tree.
   ///
@@ -220,24 +245,23 @@ private:
   /// every step. Therefore, we need to store leaf end indices by reference
   /// to avoid updating O(N) leaves at every step of construction. Thus,
   /// every internal node must be allocated its own end index.
-  /// 
-  /// Note that because this is a bump pointer allocator, we don't have to
-  /// manually delete the end indices of the nodes in the tree.
   BumpPtrAllocator InternalEndIdxAllocator;
-
-  /// The root of the suffix tree.
-  ///
-  /// The root represents the empty string. It is maintained by the
-  /// NodeAllocator like every other node in the tree. However, we need access
-  /// to it so that we can traverse and query the tree.
-  SuffixTreeNode *Root = nullptr;
-
-  /// \brief Contains the instruction-unsigned mappings for the basic blocks of
-  /// the program.
-  std::vector<unsigned> Correspondence;
 
   /// The end index of each leaf in the tree.
   size_t LeafEndIdx = -1;
+
+  /// \brief Helper struct which keeps track of the next insertion point in
+  /// Ukkonen's algorithm.
+  struct ActiveState {
+    /// The next node to insert at.
+    SuffixTreeNode *Node;
+
+    /// The index of the first character in the substring currently being added.
+    size_t Idx = EmptyIdx;
+
+    /// The length of the substring we have to add at the current step.
+    size_t Len = 0;
+  };
 
   /// \brief The point the next insertion will take place at in the
   /// construction algorithm.
@@ -264,8 +288,7 @@ private:
     if (!IsLeaf)
       E = new (InternalEndIdxAllocator) size_t(EndIdx);
 
-    N = new (NodeAllocator) SuffixTreeNode(StartIdx, E, Root);
-    N->Parent = Parent;
+    N = new (NodeAllocator) SuffixTreeNode(StartIdx, E, Root, Parent);
 
     if (Parent)
       Parent->Children[Edge] = N;
@@ -273,10 +296,8 @@ private:
     return N;
   }
 
-  /// Assign suffix indices to each leaf in the tree.
-  ///
-  /// Each leaf will store the start index of its respective suffix after
-  /// setting the leaf ends in its \p SuffixIdx.
+  /// \brief Set the suffix indices of the leaves to the start indices of their
+  /// respective suffices.
   void setSuffixIndices(SuffixTreeNode &CurrentNode, size_t LabelHeight) {
     bool IsLeaf = true;
 
@@ -288,16 +309,15 @@ private:
     }
 
     if (IsLeaf) {
-      CurrentNode.SuffixIdx = Correspondence.size() - LabelHeight;
+      CurrentNode.SuffixIdx = Str.size() - LabelHeight;
       CurrentNode.Parent->OccurrenceCount++;
     }
   }
 
-  /// \brief Construct the suffix tree for the prefix of the input mapping ending
-  /// at \p EndIdx.
+  /// \brief Construct the suffix tree for the prefix of the input ending at
+  /// \p EndIdx.
   ///
-  /// Used to construct the full suffix tree iteratively. For more detail, see
-  /// Ukkonen's algorithm.
+  /// Used to construct the full suffix tree iteratively.
   ///
   /// \param EndIdx The end index of the current prefix in the main string.
   /// \param NeedsLink The internal \p SuffixTreeNode that needs a suffix link.
@@ -306,16 +326,16 @@ private:
   void extend(size_t EndIdx, SuffixTreeNode *NeedsLink, size_t &SuffixesToAdd) {
 
     while (SuffixesToAdd > 0) {
-      // The length of the current mapping is 0, so we look at the last added
+      // The length of the current string is 0, so we look at the last added
       // character to our substring.
       if (Active.Len == 0)
         Active.Idx = EndIdx;
 
-      assert(Active.Idx <= EndIdx && "First char can't be after last char!");
+      assert(Active.Idx <= EndIdx && "Start index can't be after end index!");
 
       // The first and last character in the current substring we're looking at.
-      unsigned FirstChar = Correspondence[Active.Idx];
-      unsigned LastChar = Correspondence[EndIdx];
+      unsigned FirstChar = Str[Active.Idx];
+      unsigned LastChar = Str[EndIdx];
 
       // During the previous step, we stopped on a node *and* it has no
       // transition to another node on the next character in our current
@@ -335,9 +355,9 @@ private:
         // where to put the node.
         SuffixTreeNode *NextNode = Active.Node->Children[FirstChar];
 
-        // The child that we want to move to already contains our current mapping
-        // up to some point. Move to the index in that node where we'd have a
-        // mismatch and try again.
+        // The child that we want to move to already contains our current
+        // string up to some point. Move to the index in that node where we'd
+        // have a mismatch and try again.
         size_t SubstringLen = NextNode->size();
         if (Active.Len >= SubstringLen) {
           Active.Idx += SubstringLen;
@@ -346,8 +366,8 @@ private:
           continue;
         }
 
-        // The mapping is already in the tree, so we're done.
-        if (Correspondence[NextNode->StartIdx + Active.Len] == LastChar) {
+        // The string is already in the tree, so we're done.
+        if (Str[NextNode->StartIdx + Active.Len] == LastChar) {
           if (NeedsLink && Active.Node->StartIdx != EmptyIdx) {
             NeedsLink->Link = Active.Node;
             Active.Node->BackLink = NeedsLink;
@@ -379,7 +399,7 @@ private:
         // node we inserted.
         NextNode->StartIdx += Active.Len;
         NextNode->Parent = SplitNode;
-        SplitNode->Children[Correspondence[NextNode->StartIdx]] = NextNode;
+        SplitNode->Children[Str[NextNode->StartIdx]] = NextNode;
 
         // We visited an internal node, so we need to set suffix links
         // accordingly.
@@ -409,111 +429,139 @@ private:
 
 public:
 
-  void findBest(SuffixTreeNode &N, size_t LabelHeight, size_t &MaxLen,
-                           size_t &MaxBenefit, size_t &StartIdx) {
-    if (!N.IsInTree)
+  /// \brief Traverses the tree depth-first for the string with the highest
+  /// benefit.
+  ///
+  /// Helper function for \p bestRepeatedSubstring.
+  ///
+  /// \param N The node currently being visited.
+  /// \param CurrLen Length of the current string.
+  /// \param [out] BestLen Length of the most beneficial substring.
+  /// \param [out] MaxBenefit Benefit of the most beneficial substring.
+  /// \param [out] BestStartIdx Start index of the most beneficial substring.
+  void findBest(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &BestLen,
+                           size_t &MaxBenefit, size_t &BestStartIdx) {
+    if (!CurrNode.IsInTree)
       return;
 
     // We hit an internal node, so we can traverse further down the tree.
     // For each child, traverse down as far as possible and set MaxHeight
-    if (!N.isLeaf()) {
-      for (auto &ChildPair : N.Children) {
+    if (!CurrNode.isLeaf()) {
+      for (auto &ChildPair : CurrNode.Children) {
         if (ChildPair.second && ChildPair.second->IsInTree)
           findBest(*ChildPair.second,
-                              LabelHeight + ChildPair.second->size(),
-                              MaxLen,
+                              CurrLen + ChildPair.second->size(),
+                              BestLen,
                               MaxBenefit,
-                              StartIdx);
+                              BestStartIdx);
       }
     }
 
-    // We hit a leaf, so update MaxHeight if we've gone further down the
-    // tree.
-    else if (N.isLeaf() && N.Parent != Root && N.Parent->OccurrenceCount >= 2) {
-      size_t InstructionsAdded = 2;
-      size_t OccurrencesSaved = N.Parent->OccurrenceCount - 1;
-      size_t Benefit = (LabelHeight - N.size()) * OccurrencesSaved;
+    // We hit a leaf. Check if we found a better substring than we had before.
+    else if (CurrNode.isLeaf() &&
+             CurrNode.Parent != Root &&
+             CurrNode.Parent->OccurrenceCount >= 2) {
 
-      if (Benefit < InstructionsAdded)
+      size_t StringLen = CurrLen - CurrNode.size(); // Length of parent.
+
+      if (StringLen < 2)
         return;
 
-      Benefit -= InstructionsAdded;
-      if (Benefit > MaxBenefit) {
-        MaxBenefit = Benefit;
-        StartIdx = N.SuffixIdx;
-        MaxLen = LabelHeight - N.size();
-      }
+      size_t Occurrences = CurrNode.Parent->OccurrenceCount;
+
+      size_t Benefit = StringLen * (Occurrences - 1);
+
+      // We didn't save anything or do better. Quit.
+      // FIXME: 2 should be target defined. It is the number of instructions
+      // necessary for the function call, epilogue, prologue, etc.
+      if (Benefit <= 2 || Benefit <= MaxBenefit)
+        return;
+
+      MaxBenefit = Benefit;
+      BestStartIdx = CurrNode.SuffixIdx;
+      BestLen = StringLen;
     }
   }
 
+  /// \brief Return the substring of the tree with maximal benefit if a
+  /// beneficial substring exists.
+  ///
+  /// Let
+  ///    SL = string length
+  ///    OC = # occurrences of string
+  ///    IA = # instructions added to create the outlined function
+  ///
+  /// Then the most beneficial substring is the one which maximizes
+  ///
+  /// Benefit = SL * (OC - 1) - IA
+  ///
+  /// Where Benefit >= 1.
+  ///
+  /// \param [in,out] Best The most beneficial substring in the tree. Empty
+  /// if it does not exist.
   void bestRepeatedSubstring(std::vector<unsigned> &Best) {
-    size_t Length = 0;
-    size_t Benefit = 0;
-    size_t FirstChar = 0;
-    SuffixTreeNode &N = *Root;
-
-    findBest(N, 0, Length, Benefit, FirstChar);
     Best.clear();
-
+    size_t Length = 0; // Becomes the length of the best substring.
+    size_t Benefit = 0; // Becomes the benefit of the best substring.
+    size_t StartIdx = 0; // Becomes the start index of the best substring.
+    findBest(*Root, 0, Length, Benefit, StartIdx);
+    
     for (size_t Idx = 0; Idx < Length; Idx++)
-      Best.push_back(Correspondence[Idx + FirstChar]);
+      Best.push_back(Str[Idx + StartIdx]);
   }
 
   /// Perform a depth-first search for \p QueryString on the suffix tree.
   ///
-  /// \param QueryString The mapping to search for.
-  /// \param CurrIdx The current index in the query mapping that is being
-  /// matched against.
+  /// \param QueryString The string to search for.
+  /// \param CurrIdx The current index in \p QueryString that is being matched
+  /// against.
   /// \param CurrSuffixTreeNode The suffix tree node being searched in.
   ///
   /// \returns A \p SuffixTreeNode that \p QueryString appears in if such a
-  /// node exists, and nullptr otherwise.
+  /// node exists, and \p nullptr otherwise.
   SuffixTreeNode *findString(const std::vector<unsigned> &QueryString,
                              size_t &CurrIdx,
                              SuffixTreeNode *CurrNode) {
     
-    // The search ended at a nonexistent or purged node. Quit early.
+    // The search ended at a nonexistent or pruned node. Quit.
     if (!CurrNode || !CurrNode->IsInTree)
       return nullptr;
 
     if (CurrNode->StartIdx == EmptyIdx) {
       // If we're at the root we have to check if there's a child, and move to
-      // that child. We don't consume the character since Root represents the
+      // that child. Don't consume the character since \p Root represents the
       // empty string.
       if (CurrNode->Children[QueryString[CurrIdx]] != nullptr &&
           CurrNode->Children[QueryString[CurrIdx]]->IsInTree)
         return findString(QueryString, CurrIdx,
                           CurrNode->Children[QueryString[CurrIdx]]);
-
       return nullptr;
     }
 
-
-    // The node represents a non-empty string, so we should match against it and
-    // check its children if necessary.
     size_t StrIdx = CurrNode->StartIdx;
-    size_t MaxIdx = QueryString.size() - 1;
+    size_t MaxIdx = QueryString.size();
     bool ContinueSearching = false;
-    // Increment CurrIdx while checking the mapping for equivalence. Set
-    // Found and possibly break based off of the case we find.
 
+    // Match as far as possible into the string. If there's a mismatch, quit.
     for (; CurrIdx < MaxIdx; CurrIdx++, StrIdx++) {
 
-      // Failure case 1: We moved outside the string, BUT we matched
-      // perfectly up to that point.
+      // We matched perfectly, but still have a remainder to search.
       if (StrIdx > *(CurrNode->EndIdx)) {
         ContinueSearching = true;
         break;
       }
 
-      // We didn't match on the node, so we can stop here.
-      if (QueryString[CurrIdx] != Correspondence[StrIdx])
+      if (QueryString[CurrIdx] != Str[StrIdx])
         return nullptr;
     }
 
+    // Move to the node which matches what we're looking for and continue
+    // searching.
     if (ContinueSearching)
-      return findString(QueryString, CurrIdx, CurrNode->Children[QueryString[CurrIdx]]);
+      return findString(QueryString, CurrIdx,
+                        CurrNode->Children[QueryString[CurrIdx]]);
 
+    // We matched perfectly so we're done.
     return CurrNode;
   }
 
@@ -523,73 +571,56 @@ public:
   /// This is used in the outlining algorithm to reduce the number of
   /// overlapping candidates
   void prune(SuffixTreeNode *N) {
-    N->IsInTree = false;
 
+    // For each suffix of N's string, reduce the number of occurrences of that
+    // node by the number of occurrences of N. If there are no occurrences,
+    // remove that node from the tree.
     for (SuffixTreeNode *T = N->Link; T && T != Root; T = T->Link) {
-      if (T->OccurrenceCount > N->OccurrenceCount)
-        T->OccurrenceCount -= N->OccurrenceCount;
-      else
-        T->OccurrenceCount = 0;
-
+      T->OccurrenceCount = (T->OccurrenceCount > N->OccurrenceCount) ?
+                            T->OccurrenceCount -= N->OccurrenceCount :
+                            T->OccurrenceCount = 0; 
       T->IsInTree = T->OccurrenceCount > 1;
     }
 
     // We removed every occurrence of the string associated with N, so every
-    // string it is a proper suffix of is no longer a candidate.
-    for (SuffixTreeNode *T = N->BackLink; T && T != Root; T = T->BackLink) {
+    // string it is a suffix of is no longer a candidate. Also throw N out.
+    for (SuffixTreeNode *T = N; T && T != Root; T = T->BackLink) {
       T->OccurrenceCount = 0;
       T->IsInTree = false;
     }
-
-    N->OccurrenceCount = 0;
   }
 
-  /// Find each occurrence of of a mapping in \p Correspondence and prune their nodes.
+  /// Find each occurrence of of a string in \p Str and prune their nodes.
   ///
-  /// \param QueryString The mapping to search for.
-  ///
-  /// \returns A list of pairs of \p Strings and offsets into \p Correspondence
-  /// representing each occurrence if \p QueryString is present. Returns
-  /// an empty vector if there are no occurrences.
-  //std::vector<std::pair<std::vector<unsigned>, size_t>>
-  std::vector<size_t>
-  findOccurrencesAndPrune(const std::vector<unsigned> &QueryString) {
-    size_t Len = 0;
-    std::vector<size_t> Occurrences;
-    SuffixTreeNode *N = findString(QueryString, Len, Root);
+  /// \param QueryString The string to search for.
+  /// \param [out] Occurrences The start indices of each occurrence.
+  void findOccurrencesAndPrune(const std::vector<unsigned> &QueryString,
+                               std::vector<size_t> &Occurrences) {
+    size_t Dummy = 0;
+    SuffixTreeNode *N = findString(QueryString, Dummy, Root);
 
     if (!N || !N->IsInTree)
-      return Occurrences;
+      return;
 
-    // If we're in a suffix, then there's only one occurrence of this node.
-    if (N->isLeaf()) {
-      size_t StartIdx = N->SuffixIdx;
-      Occurrences.push_back(StartIdx);
-      prune(N);
-      return Occurrences;
-    }
-
-    // There "are" occurrences. Collect them and then prune them from the tree.
-    // There could also really be no occurrences because some of them could
-    // have been pruned.
-    SuffixTreeNode *M;
-
+    // If this is an internal node, occurrences are the number of leaf children
+    // of the node.
     for (auto &ChildPair : N->Children) {
-      M = ChildPair.second;
+      SuffixTreeNode *M = ChildPair.second;
 
-      if (M && M->IsInTree && M->isLeaf()) {
-        size_t StartIdx = M->SuffixIdx;
-        Occurrences.push_back(StartIdx);
-      }
+      if (M && M->IsInTree && M->isLeaf())
+        Occurrences.push_back(M->SuffixIdx);
     }
-  
+
+    // If we're in a leaf, then this node is the only occurrence.
+    if (N->isLeaf())
+      Occurrences.push_back(N->SuffixIdx);
+
     prune(N);
-    return Occurrences;
   }
 
   /// Construct a suffix tree from a sequence of unsigned integers.
-  SuffixTree(const std::vector<unsigned> &Correspondence_) :
-  Correspondence(Correspondence_)
+  SuffixTree(const std::vector<unsigned> &Str_) :
+  Str(Str_)
   {
     Root = insertNode(nullptr, EmptyIdx, EmptyIdx, 0, false);
     Root->IsInTree = true;
@@ -603,26 +634,24 @@ public:
 
     // Construct the suffix tree iteratively on each prefix of the string.
     // PfxEndIdx is the end index of the current prefix.
-    // StrEnd is one past the last element in the string.
-    for (size_t PfxEndIdx = 0, StrEnd = Correspondence.size(); PfxEndIdx < StrEnd; PfxEndIdx++) {
+    // End is one past the last element in the string.
+    for (size_t PfxEndIdx = 0, End = Str.size(); PfxEndIdx < End; PfxEndIdx++) {
       SuffixesToAdd++;
       NeedsLink = nullptr;
       LeafEndIdx = PfxEndIdx;
       extend(PfxEndIdx, NeedsLink, SuffixesToAdd);
     }
 
-    // Now that we're done constructing the tree, we can set the suffix indices
-    // of each leaf.
+    // Set the suffix indices of each leaf.
     size_t LabelHeight = 0;
-    assert(Root && "Root node was null!");
+    assert(Root && "Root node can't be nullptr!");
     setSuffixIndices(*Root, LabelHeight);
   }
 };
 
-/*****************************************************************************/
 
-/// \brief An individual sequence of instructions to be replaced with a call
-/// to an outlined function.
+/// \brief An individual sequence of instructions to be replaced with a call to
+/// an outlined function.
 struct Candidate {
 
   /// \brief The start index of this \p Candidate.
@@ -649,6 +678,7 @@ struct Candidate {
 /// \brief Stores created outlined functions and the information needed to
 /// construct them.
 struct OutlinedFunction {
+
   /// The actual outlined function created.
   /// This is initialized after we go through and create the actual function.
   MachineFunction *MF;
@@ -659,10 +689,14 @@ struct OutlinedFunction {
   /// The number of times that this function has appeared.
   size_t OccurrenceCount;
 
+  /// \brief The sequence of integers corresponding to the instructions in this
+  /// function.
   std::vector<unsigned> Sequence;
 
-  OutlinedFunction(size_t Name_, size_t OccurrenceCount_, const std::vector<unsigned> &Sequence_)
-      : Name(Name_), OccurrenceCount(OccurrenceCount_), Sequence(Sequence_) {}
+  OutlinedFunction(size_t Name_, size_t OccurrenceCount_,
+                   const std::vector<unsigned> &Sequence_)
+      : Name(Name_), OccurrenceCount(OccurrenceCount_), Sequence(Sequence_)
+      {}
 };
 } // Anonymous namespace.
 
@@ -691,10 +725,10 @@ struct MachineOutliner : public ModulePass {
   /// Set to -3 to avoid attempting to query the \p DenseMap in
   /// \p SuffixTreeNode for the tombstone and empty keys given by the
   /// unsigned \p DenseMap template specialization.
-  unsigned CurrIllegalInstrCorrespondence = -3;
+  unsigned IllegalInstrNumber = -3;
 
   /// The last value assigned to an instruction we can outline.
-  unsigned CurrLegalInstrCorrespondence = 0;
+  unsigned LegalInstrNumber = 0;
 
   /// The ID of the last function created.
   size_t CurrentFunctionID;
@@ -713,18 +747,22 @@ struct MachineOutliner : public ModulePass {
     initializeMachineOutlinerPass(*PassRegistry::getPassRegistry());
   }
 
-  /// Construct an instruction-integer mapping for a \p MachineBasicBlock.
+  /// \brief Transforms a \p MachineBasicBlock into a \p vector of \p unsigneds
+  /// and appends it to \p UnsignedVec and \p InstrList.
   ///
-  /// This function translates each instruction into an unsigned integer. Two
-  /// instructions are assigned the same integer if they are identical. If an
-  /// instruction is deemed unsafe to outline, then it will be assigned an
-  /// unique integer. The resultant mapping is placed into a suffix tree and
+  /// Two instructions are assigned the same integer if they are identical.
+  /// If an instruction is deemed unsafe to outline, then it will be assigned an
+  /// unique integer. The resulting mapping is placed into a suffix tree and
   /// queried for candidates.
   ///
-  /// \param [out] Container Filled with the instruction-integer mappings for
-  /// the program.
+  /// \param [out] UnsignedVec Filled with the instruction-integer mappings for
+  /// the module.
+  /// \param [out] InstrList Filled with iterators so that the iterator at
+  /// index i points to the instruction at index i in UnsignedVec.
   /// \param BB The \p MachineBasicBlock to be translated into integers.
-  void buildInstructionCorrespondence(std::vector<unsigned> &Container,
+  /// \param TRI TargetRegisterInfo for the module.
+  /// \param TII TargetInstrInfo for the module.
+  void convertToUnsignedVec(std::vector<unsigned> &UnsignedVec,
                         std::vector<MachineBasicBlock::iterator> &InstrList,
                         MachineBasicBlock &BB,
                         const TargetRegisterInfo &TRI,
@@ -734,10 +772,14 @@ struct MachineOutliner : public ModulePass {
   /// \p Candidates in \p CandidateList with calls to \p MachineFunctions
   /// described in \p FunctionList.
   ///
+  /// \param M The module we are outlining from.
+  /// \param InstrList Contains a list of iterators so that the i-th index from
+  /// the suffix tree corresponds to the i-th instruction.
   /// \param CandidateList A list of candidates to be outlined.
   /// \param FunctionList A list of functions to be inserted into the program.
-  bool outline(Module &M, std::vector<MachineBasicBlock::iterator> &InstrList,
-               std::vector<Candidate> &CandidateList,
+  bool outline(Module &M,
+               const std::vector<MachineBasicBlock::iterator> &InstrList,
+               const std::vector<Candidate> &CandidateList,
                std::vector<OutlinedFunction> &FunctionList);
 
   /// Creates a function for \p OF and inserts it into the program.
@@ -773,26 +815,26 @@ ModulePass *createOutlinerPass() { return new MachineOutliner(); }
 INITIALIZE_PASS(MachineOutliner, "machine-outliner",
                 "Machine Function Outliner", false, false)
 
-void MachineOutliner::buildInstructionCorrespondence(std::vector<unsigned> &Container,
-                                       std::vector<MachineBasicBlock::iterator> &InstrList,
-                                       MachineBasicBlock &MBB,
-                                       const TargetRegisterInfo &TRI,
-                                       const TargetInstrInfo &TII) {
-  for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end(); It != Et; It++) {
-    MachineInstr& MI = *It;
-    // First, check if the current instruction is legal to outline at all.
-    bool IsSafeToOutline = TII.isLegalToOutline(MI);
+void MachineOutliner::convertToUnsignedVec(std::vector<unsigned> &UnsignedVec,
+                            std::vector<MachineBasicBlock::iterator> &InstrList,
+                            MachineBasicBlock &MBB,
+                            const TargetRegisterInfo &TRI,
+                            const TargetInstrInfo &TII) {
+  for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end();
+       It != Et; It++) {
     InstrList.push_back(It);
-
+    MachineInstr& MI = *It;
+    bool IsSafeToOutline = TII.isLegalToOutline(MI);
+    
     // If it's not, give it a bad number.
     if (!IsSafeToOutline) {
-      Container.push_back(CurrIllegalInstrCorrespondence);
-      CurrIllegalInstrCorrespondence--;
-      assert(CurrLegalInstrCorrespondence < CurrIllegalInstrCorrespondence &&
+      UnsignedVec.push_back(IllegalInstrNumber);
+      IllegalInstrNumber--;
+      assert(LegalInstrNumber < IllegalInstrNumber &&
              "Instruction mapping overflow!");
-      assert(CurrIllegalInstrCorrespondence != (unsigned)-1 &&
-             CurrIllegalInstrCorrespondence != (unsigned)-2 &&
-             "Correspondence cannot be DenseMap tombstone or empty key!");
+      assert(IllegalInstrNumber != (unsigned)-1 &&
+             IllegalInstrNumber != (unsigned)-2 &&
+             "Str cannot be DenseMap tombstone or empty key!");
       continue;
     }
 
@@ -800,25 +842,28 @@ void MachineOutliner::buildInstructionCorrespondence(std::vector<unsigned> &Cont
     // the map, then give it the previously assigned integer. Otherwise, give
     // it the next available one.
     auto I = InstructionIntegerMap.insert(
-        std::make_pair(&MI, CurrLegalInstrCorrespondence));
-    IntegerInstructionMap.insert(std::make_pair(CurrLegalInstrCorrespondence, &MI));
+        std::make_pair(&MI, LegalInstrNumber));
 
-    if (I.second)
-      CurrLegalInstrCorrespondence++;
+    // There was an insertion.
+    if (I.second) {
+      LegalInstrNumber++;
+      IntegerInstructionMap.insert(std::make_pair(I.first->second, &MI)); 
+    }
 
     unsigned MINumber = I.first->second;
-    Container.push_back(MINumber);
+    UnsignedVec.push_back(MINumber);
     CurrentFunctionID++;
-    assert(CurrLegalInstrCorrespondence < CurrIllegalInstrCorrespondence &&
+    assert(LegalInstrNumber < IllegalInstrNumber &&
+           LegalInstrNumber != (unsigned)-3 &&
            "Instruction mapping overflow!");
-    assert(CurrLegalInstrCorrespondence != (unsigned)-1 &&
-           CurrLegalInstrCorrespondence != (unsigned)-2 &&
-           "Correspondence cannot be DenseMap tombstone or empty key!");
+    assert(LegalInstrNumber != (unsigned)-1 &&
+           LegalInstrNumber != (unsigned)-2 &&
+           "Str cannot be DenseMap tombstone or empty key!");
   }
 
   InstrList.push_back(nullptr);
-  Container.push_back(CurrIllegalInstrCorrespondence);
-  CurrIllegalInstrCorrespondence--;
+  UnsignedVec.push_back(IllegalInstrNumber);
+  IllegalInstrNumber--;
 }
 
 void MachineOutliner::buildCandidateList(
@@ -829,28 +874,31 @@ void MachineOutliner::buildCandidateList(
   std::vector<unsigned> CandidateSequence;
 
   for (ST.bestRepeatedSubstring(CandidateSequence);
-       CandidateSequence.size() >= 2;
+       CandidateSequence.size() > 0;
        ST.bestRepeatedSubstring(CandidateSequence)) {
 
-    std::vector<size_t> Occurrences =
-    ST.findOccurrencesAndPrune(CandidateSequence); 
+    std::vector<size_t> Occurrences;
+    ST.findOccurrencesAndPrune(CandidateSequence, Occurrences); 
 
+    // If a candidate doesn't appear at least twice, we won't save anything.
     if (Occurrences.size() < 2)
       break;
 
-    FunctionList.push_back(OutlinedFunction(FunctionList.size(), Occurrences.size(), CandidateSequence));
+    FunctionList.push_back(OutlinedFunction(FunctionList.size(),
+                                            Occurrences.size(),
+                                            CandidateSequence));
 
     // Save each of the occurrences for the outlining process.
     for (size_t &Occ : Occurrences) {
       CandidateList.push_back(Candidate(
-          Occ,                      // Starting idx in that MBB.
+          Occ,                       // Starting idx in that MBB.
           CandidateSequence.size(),  // Candidate length.
-          FunctionList.size() - 1 // Idx of the corresponding function.
+          FunctionList.size() - 1    // Idx of the corresponding function.
           ));
     }
 
     CurrentFunctionID++;
-    FunctionsCreatedStat++;
+    FunctionsCreated++;
   }
 
     // Sort the candidates in decending order. This will simplify the outlining
@@ -894,8 +942,10 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 
   // Copy over the instructions for the function using the integer mappings in
   // its sequence.
-  for (unsigned Correspondence : OF.Sequence) {
-    MachineInstr *NewMI = MF.CloneMachineInstr(IntegerInstructionMap.find(Correspondence)->second);
+  for (unsigned Str : OF.Sequence) {
+    MachineInstr *NewMI = MF.CloneMachineInstr(
+                              IntegerInstructionMap.find(Str)->second
+                          );
     NewMI->dropMemRefs();
     MBB->insert(MBB->end(), NewMI);
   }
@@ -912,59 +962,59 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 }
 
 bool MachineOutliner::outline(Module &M,
-                              std::vector<MachineBasicBlock::iterator> &InstrList,
-                              std::vector<Candidate> &CandidateList,
-                              std::vector<OutlinedFunction> &FunctionList) {
+                      const std::vector<MachineBasicBlock::iterator> &InstrList,
+                      const std::vector<Candidate> &CandidateList,
+                      std::vector<OutlinedFunction> &FunctionList) {
   bool OutlinedSomething = false;
 
   // Create an outlined function for each candidate.
+  // FIXME: Do this after determining if a candidate is non-overlapping.
   for (OutlinedFunction &OF : FunctionList)
     OF.MF = createOutlinedFunction(M, OF);
 
   // Replace the candidates with calls to their respective outlined functions.
-  //
-  // FIXME: Change the suffix tree pruning technique so that it follows the
-  // *longest* path on each internal node which *contains the node* that we're
-  // invalidating stuff *for*. This will allow us to catch cases like this:
-  // Outline "123", Outline "112". This method would make this unnecessary.
-  //
-  // FIXME: Currently, this method can allow us to unnecessarily outline stuff.
-  // This should be done *before* we create the outlined functions.
   for (const Candidate &C : CandidateList) {
 
     MachineBasicBlock *MBB = (*InstrList[C.StartIdx]).getParent();
-    size_t EndIdx = C.StartIdx + C.Len;
-    // If a block's already been outlined from at a point we want to outline from
-    // then we should quit. We know this has happened for sure if the basic
-    // block is too small to outline the candidate from.
-    bool AlreadyOutlinedFrom = (EndIdx >= MBB->size());
+    MachineBasicBlock::iterator StartIt = InstrList[C.StartIdx];
 
-    // If we've outlined from this spot, or we don't have enough occurrences to
-    // justify outlining stuff, then skip this candidate.
-    if (AlreadyOutlinedFrom || FunctionList[C.FunctionIdx].OccurrenceCount < 2)
+    // If we're trying to outline from an overlap, we might be out of bounds.
+    // If we are, quit.
+    size_t OnePastEndIdx = C.StartIdx + C.Len;
+    size_t Dist = OnePastEndIdx - C.StartIdx;
+    size_t ItEndDist = std::distance(StartIt, MBB->end());
+    bool AlreadyOutlinedFrom = (Dist >= ItEndDist);
+
+    if (AlreadyOutlinedFrom)
       continue;
 
-    // We have a candidate which doesn't conflict with any other candidates, so
-    // we can go ahead and outline it.
-    OutlinedSomething = true;
-    NumOutlinedStat++;
+    OutlinedFunction OF = FunctionList[C.FunctionIdx];
+    std::vector<unsigned> &Sequence = OF.Sequence;
 
-    // Outline the function from the module.
-    // Note that we don't have to do this from the mapped sequence because we
-    // sorted our candidates.
-    MachineFunction *MF = FunctionList[C.FunctionIdx].MF;
-    
+    auto It = StartIt;
+    for (unsigned U : Sequence) {
+      MachineInstr* MI = IntegerInstructionMap.find(U)->second;
+      if (!MI->isIdenticalTo(*It)) {
+        AlreadyOutlinedFrom = true;
+        break;
+      }
+      It++;
+    }
+
+    if (AlreadyOutlinedFrom)
+      continue;
+
+    MachineFunction *MF = OF.MF;
     const TargetSubtargetInfo *STI = &(MF->getSubtarget());
     const TargetInstrInfo *TII = STI->getInstrInfo();
-
-    // Now, insert the function name and delete the instructions we don't need.
-    MachineBasicBlock::iterator StartIt = InstrList[C.StartIdx];
     MachineBasicBlock::iterator EndIt = StartIt;
     std::advance(EndIt, C.Len);
-
     StartIt = TII->insertOutlinedCall(M, *MBB, StartIt, *MF);
     ++StartIt;
     MBB->erase(StartIt, EndIt);
+
+    OutlinedSomething = true;
+    NumOutlined++;
   }
 
   return OutlinedSomething;
@@ -982,17 +1032,13 @@ bool MachineOutliner::runOnModule(Module &M) {
   const TargetRegisterInfo *TRI = STI->getRegisterInfo();
   const TargetInstrInfo *TII = STI->getInstrInfo();
 
-  // Set up the suffix tree by creating strings for each basic block.
-  // Note: This means that the i-th mapping and the i-th MachineBasicBlock
-  // in the work list correspond to each other. It also means that the
-  // j-th unsigned in that mapping and the j-th instruction in that
-  // MBB correspond with each other.
-  std::vector<unsigned> Container;
+  std::vector<unsigned> UnsignedVec;
   std::vector<MachineBasicBlock::iterator> InstrList;
 
   for (Function &F : M) {
     MachineFunction &MF = MMI.getMachineFunction(F);
 
+    // Don't outline from unsafe or empty functions.
     if (F.empty() || !TII->functionIsSafeToOutlineFrom(F))
       continue;
 
@@ -1002,13 +1048,12 @@ bool MachineOutliner::runOnModule(Module &M) {
       if (MBB.empty())
         continue;
 
-      buildInstructionCorrespondence(Container, InstrList, MBB, *TRI, *TII);
+      convertToUnsignedVec(UnsignedVec, InstrList, MBB, *TRI, *TII);
     }
   }
 
-  SuffixTree ST(Container);
-
-  // Find all of the candidates for outlining and then outline them.
+  // Construct a suffix tree, use it to find candidates, and then outline them.
+  SuffixTree ST(UnsignedVec);
   bool OutlinedSomething = false;
   std::vector<Candidate> CandidateList;
   std::vector<OutlinedFunction> FunctionList;
