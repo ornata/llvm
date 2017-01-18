@@ -511,10 +511,17 @@ public:
   getPreferredVectorAction(EVT VT) const override;
 
   bool allowFMA(MachineFunction &MF, CodeGenOpt::Level OptLevel) const;
+  bool allowUnsafeFPMath(MachineFunction &MF) const;
 
   bool isFMAFasterThanFMulAndFAdd(EVT) const override { return true; }
 
   bool enableAggressiveFMAFusion(EVT VT) const override { return true; }
+
+  // The default is to transform llvm.ctlz(x, false) (where false indicates that
+  // x == 0 is not undefined behavior) into a branch that checks whether x is 0
+  // and avoids calling ctlz in that case.  We have a dedicated ctlz
+  // instruction, so we say that ctlz is cheap to speculate.
+  bool isCheapToSpeculateCtlz() const override { return true; }
 
 private:
   const NVPTXSubtarget &STI; // cache the subtarget here
@@ -527,6 +534,7 @@ private:
 
   SDValue LowerSTORE(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSTOREi1(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerSTOREf16(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSTOREVector(SDValue Op, SelectionDAG &DAG) const;
 
   SDValue LowerShiftRightParts(SDValue Op, SelectionDAG &DAG) const;

@@ -1074,11 +1074,27 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
   if (Op2C->getValueAPF().isZero()) // pow(x, 0.0) -> 1.0
     return ConstantFP::get(CI->getType(), 1.0);
 
+  if (Op2C->isExactlyValue(-0.5) &&
+      hasUnaryFloatFn(TLI, Op2->getType(), LibFunc::sqrt, LibFunc::sqrtf,
+                      LibFunc::sqrtl)) {
+    // If -ffast-math:
+    // pow(x, -0.5) -> 1.0 / sqrt(x)
+    if (CI->hasUnsafeAlgebra()) {
+      IRBuilder<>::FastMathFlagGuard Guard(B);
+      B.setFastMathFlags(CI->getFastMathFlags());
+
+      // Here we cannot lower to an intrinsic because C99 sqrt() and llvm.sqrt
+      // are not guaranteed to have the same semantics.
+      Value *Sqrt = emitUnaryFloatFnCall(Op1, TLI->getName(LibFunc::sqrt), B,
+                                         Callee->getAttributes());
+
+      return B.CreateFDiv(ConstantFP::get(CI->getType(), 1.0), Sqrt, "sqrtrecip");
+    }
+  }
+
   if (Op2C->isExactlyValue(0.5) &&
       hasUnaryFloatFn(TLI, Op2->getType(), LibFunc::sqrt, LibFunc::sqrtf,
-                      LibFunc::sqrtl) &&
-      hasUnaryFloatFn(TLI, Op2->getType(), LibFunc::fabs, LibFunc::fabsf,
-                      LibFunc::fabsl)) {
+                      LibFunc::sqrtl)) {
 
     // In -ffast-math, pow(x, 0.5) -> sqrt(x).
     if (CI->hasUnsafeAlgebra()) {
@@ -1098,8 +1114,12 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
     Value *Inf = ConstantFP::getInfinity(CI->getType());
     Value *NegInf = ConstantFP::getInfinity(CI->getType(), true);
     Value *Sqrt = emitUnaryFloatFnCall(Op1, "sqrt", B, Callee->getAttributes());
-    Value *FAbs =
-        emitUnaryFloatFnCall(Sqrt, "fabs", B, Callee->getAttributes());
+
+    Module *M = Callee->getParent();
+    Function *FabsF = Intrinsic::getDeclaration(M, Intrinsic::fabs,
+                                                CI->getType());
+    Value *FAbs = B.CreateCall(FabsF, Sqrt);
+
     Value *FCmp = B.CreateFCmpOEQ(Op1, NegInf);
     Value *Sel = B.CreateSelect(FCmp, Inf, FAbs);
     return Sel;
@@ -1121,6 +1141,10 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
         !V.isInteger())
       return nullptr;
 
+    // Propagate fast math flags.
+    IRBuilder<>::FastMathFlagGuard Guard(B);
+    B.setFastMathFlags(CI->getFastMathFlags());
+
     // We will memoize intermediate products of the Addition Chain.
     Value *InnerChain[33] = {nullptr};
     InnerChain[1] = Op1;
@@ -1131,7 +1155,6 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
     bool ignored;
     V.convert(APFloat::IEEEdouble(), APFloat::rmTowardZero, &ignored);
     
-    // TODO: Should the new instructions propagate the 'fast' flag of the pow()?
     Value *FMul = getPow(InnerChain, V.convertToDouble(), B);
     // For negative exponents simply compute the reciprocal.
     if (Op2C->isNegative())
@@ -1189,11 +1212,15 @@ Value *LibCallSimplifier::optimizeExp2(CallInst *CI, IRBuilder<> &B) {
 
 Value *LibCallSimplifier::optimizeFabs(CallInst *CI, IRBuilder<> &B) {
   Function *Callee = CI->getCalledFunction();
-  StringRef Name = Callee->getName();
-  if (Name == "fabs" && hasFloatVersion(Name))
-    return optimizeUnaryDoubleFP(CI, B, false);
+  IRBuilder<>::FastMathFlagGuard Guard(B);
+  B.setFastMathFlags(CI->getFastMathFlags());
 
-  return nullptr;
+  // fabs/fabsf -> llvm.fabs.*
+  Value *F = Intrinsic::getDeclaration(Callee->getParent(), Intrinsic::fabs,
+                                       CI->getType());
+  Value *NewCall = B.CreateCall(F, { CI->getArgOperand(0) });
+  NewCall->takeName(CI);
+  return NewCall;
 }
 
 Value *LibCallSimplifier::optimizeFMinFMax(CallInst *CI, IRBuilder<> &B) {
@@ -2008,8 +2035,6 @@ Value *LibCallSimplifier::optimizeCall(CallInst *CI) {
       return optimizePow(CI, Builder);
     case Intrinsic::exp2:
       return optimizeExp2(CI, Builder);
-    case Intrinsic::fabs:
-      return optimizeFabs(CI, Builder);
     case Intrinsic::log:
       return optimizeLog(CI, Builder);
     case Intrinsic::sqrt:

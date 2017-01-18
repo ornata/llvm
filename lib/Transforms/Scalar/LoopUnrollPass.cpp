@@ -19,7 +19,6 @@
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/LoopPass.h"
-#include "llvm/Analysis/LoopPassManager.h"
 #include "llvm/Analysis/LoopUnrollAnalyzer.h"
 #include "llvm/Analysis/OptimizationDiagnosticInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -33,6 +32,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include <climits>
@@ -44,7 +44,11 @@ using namespace llvm;
 
 static cl::opt<unsigned>
     UnrollThreshold("unroll-threshold", cl::Hidden,
-                    cl::desc("The baseline cost threshold for loop unrolling"));
+                    cl::desc("The cost threshold for loop unrolling"));
+
+static cl::opt<unsigned> UnrollPartialThreshold(
+    "unroll-partial-threshold", cl::Hidden,
+    cl::desc("The cost threshold for partial loop unrolling"));
 
 static cl::opt<unsigned> UnrollMaxPercentThresholdBoost(
     "unroll-max-percent-threshold-boost", cl::init(400), cl::Hidden,
@@ -127,7 +131,7 @@ static TargetTransformInfo::UnrollingPreferences gatherUnrollingPreferences(
   UP.Threshold = 150;
   UP.MaxPercentThresholdBoost = 400;
   UP.OptSizeThreshold = 0;
-  UP.PartialThreshold = UP.Threshold;
+  UP.PartialThreshold = 150;
   UP.PartialOptSizeThreshold = 0;
   UP.Count = 0;
   UP.PeelCount = 0;
@@ -153,10 +157,10 @@ static TargetTransformInfo::UnrollingPreferences gatherUnrollingPreferences(
   }
 
   // Apply any user values specified by cl::opt
-  if (UnrollThreshold.getNumOccurrences() > 0) {
+  if (UnrollThreshold.getNumOccurrences() > 0)
     UP.Threshold = UnrollThreshold;
-    UP.PartialThreshold = UnrollThreshold;
-  }
+  if (UnrollPartialThreshold.getNumOccurrences() > 0)
+    UP.PartialThreshold = UnrollPartialThreshold;
   if (UnrollMaxPercentThresholdBoost.getNumOccurrences() > 0)
     UP.MaxPercentThresholdBoost = UnrollMaxPercentThresholdBoost;
   if (UnrollMaxCount.getNumOccurrences() > 0)
@@ -1111,43 +1115,25 @@ Pass *llvm::createSimpleLoopUnrollPass() {
   return llvm::createLoopUnrollPass(-1, -1, 0, 0, 0);
 }
 
-PreservedAnalyses LoopUnrollPass::run(Loop &L, LoopAnalysisManager &AM) {
+PreservedAnalyses LoopUnrollPass::run(Loop &L, LoopAnalysisManager &AM,
+                                      LoopStandardAnalysisResults &AR,
+                                      LPMUpdater &) {
   const auto &FAM =
-      AM.getResult<FunctionAnalysisManagerLoopProxy>(L).getManager();
+      AM.getResult<FunctionAnalysisManagerLoopProxy>(L, AR).getManager();
   Function *F = L.getHeader()->getParent();
 
-
-  DominatorTree *DT = FAM.getCachedResult<DominatorTreeAnalysis>(*F);
-  LoopInfo *LI = FAM.getCachedResult<LoopAnalysis>(*F);
-  ScalarEvolution *SE = FAM.getCachedResult<ScalarEvolutionAnalysis>(*F);
-  auto *TTI = FAM.getCachedResult<TargetIRAnalysis>(*F);
-  auto *AC = FAM.getCachedResult<AssumptionAnalysis>(*F);
   auto *ORE = FAM.getCachedResult<OptimizationRemarkEmitterAnalysis>(*F);
-  if (!DT)
-    report_fatal_error(
-        "LoopUnrollPass: DominatorTreeAnalysis not cached at a higher level");
-  if (!LI)
-    report_fatal_error(
-        "LoopUnrollPass: LoopAnalysis not cached at a higher level");
-  if (!SE)
-    report_fatal_error(
-        "LoopUnrollPass: ScalarEvolutionAnalysis not cached at a higher level");
-  if (!TTI)
-    report_fatal_error(
-        "LoopUnrollPass: TargetIRAnalysis not cached at a higher level");
-  if (!AC)
-    report_fatal_error(
-        "LoopUnrollPass: AssumptionAnalysis not cached at a higher level");
+  // FIXME: This should probably be optional rather than required.
   if (!ORE)
     report_fatal_error("LoopUnrollPass: OptimizationRemarkEmitterAnalysis not "
                        "cached at a higher level");
 
-  bool Changed =
-      tryToUnrollLoop(&L, *DT, LI, SE, *TTI, *AC, *ORE, /*PreserveLCSSA*/ true,
-                      ProvidedCount, ProvidedThreshold, ProvidedAllowPartial,
-                      ProvidedRuntime, ProvidedUpperBound);
-
+  bool Changed = tryToUnrollLoop(&L, AR.DT, &AR.LI, &AR.SE, AR.TTI, AR.AC, *ORE,
+                                 /*PreserveLCSSA*/ true, ProvidedCount,
+                                 ProvidedThreshold, ProvidedAllowPartial,
+                                 ProvidedRuntime, ProvidedUpperBound);
   if (!Changed)
     return PreservedAnalyses::all();
+
   return getLoopPassPreservedAnalyses();
 }

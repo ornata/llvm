@@ -1472,6 +1472,27 @@ Value *InstCombiner::SimplifyDemandedVectorElts(Value *V, APInt DemandedElts,
       break;
     }
 
+    // PSHUFB
+    case Intrinsic::x86_ssse3_pshuf_b_128:
+    case Intrinsic::x86_avx2_pshuf_b:
+    case Intrinsic::x86_avx512_pshuf_b_512:
+    // PERMILVAR
+    case Intrinsic::x86_avx_vpermilvar_ps:
+    case Intrinsic::x86_avx_vpermilvar_ps_256:
+    case Intrinsic::x86_avx512_vpermilvar_ps_512:
+    case Intrinsic::x86_avx_vpermilvar_pd:
+    case Intrinsic::x86_avx_vpermilvar_pd_256:
+    case Intrinsic::x86_avx512_vpermilvar_pd_512:
+    // PERMV
+    case Intrinsic::x86_avx2_permd:
+    case Intrinsic::x86_avx2_permps: {
+      Value *Op1 = II->getArgOperand(1);
+      TmpV = SimplifyDemandedVectorElts(Op1, DemandedElts, UndefElts,
+                                        Depth + 1);
+      if (TmpV) { II->setArgOperand(1, TmpV); MadeChange = true; }
+      break;
+    }
+
     // SSE4A instructions leave the upper 64-bits of the 128-bit result
     // in an undefined state.
     case Intrinsic::x86_sse4a_extrq:

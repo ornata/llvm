@@ -1116,7 +1116,7 @@ public:
         return Error::success();
       // If it's invalid and we can't re-attempt negotiation, throw an error.
       if (!Retry)
-        return orcError(OrcErrorCode::UnknownRPCFunction);
+        return make_error<RPCFunctionNotSupported>(Func::getPrototype());
     }
 
     // We don't have a function id for Func yet, call the remote to try to
@@ -1124,7 +1124,7 @@ public:
     if (auto RemoteIdOrErr = callB<OrcRPCNegotiate>(Func::getPrototype())) {
       this->RemoteFunctionIds[Func::getPrototype()] = *RemoteIdOrErr;
       if (*RemoteIdOrErr == this->getInvalidFunctionId())
-        return orcError(OrcErrorCode::UnknownRPCFunction);
+        return make_error<RPCFunctionNotSupported>(Func::getPrototype());
       return Error::success();
     } else
       return RemoteIdOrErr.takeError();
@@ -1254,7 +1254,7 @@ public:
         return Error::success();
       // If it's invalid and we can't re-attempt negotiation, throw an error.
       if (!Retry)
-        return orcError(OrcErrorCode::UnknownRPCFunction);
+        return make_error<RPCFunctionNotSupported>(Func::getPrototype());
     }
 
     // We don't have a function id for Func yet, call the remote to try to
@@ -1262,7 +1262,7 @@ public:
     if (auto RemoteIdOrErr = callB<OrcRPCNegotiate>(Func::getPrototype())) {
       this->RemoteFunctionIds[Func::getPrototype()] = *RemoteIdOrErr;
       if (*RemoteIdOrErr == this->getInvalidFunctionId())
-        return orcError(OrcErrorCode::UnknownRPCFunction);
+        return make_error<RPCFunctionNotSupported>(Func::getPrototype());
       return Error::success();
     } else
       return RemoteIdOrErr.takeError();

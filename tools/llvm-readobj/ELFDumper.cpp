@@ -12,7 +12,6 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include "ARMAttributeParser.h"
 #include "ARMEHABIPrinter.h"
 #include "Error.h"
 #include "ObjDumper.h"
@@ -22,6 +21,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Object/ELFObjectFile.h"
+#include "llvm/Support/ARMAttributeParser.h"
 #include "llvm/Support/ARMBuildAttributes.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Format.h"
@@ -1892,7 +1892,7 @@ template <> void ELFDumper<ELFType<support::little, false>>::printAttributes() {
     if (Contents.size() == 1)
       continue;
 
-    ARMAttributeParser(W).Parse(Contents);
+    ARMAttributeParser(&W).Parse(Contents, true);
   }
 }
 }

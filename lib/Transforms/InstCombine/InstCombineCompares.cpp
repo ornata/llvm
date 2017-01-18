@@ -1910,12 +1910,43 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
 
   ICmpInst::Predicate Pred = Cmp.getPredicate();
   Value *X = Shl->getOperand(0);
+  Type *ShType = Shl->getType();
+
+  // If this is a signed comparison to 0 and the shift is sign preserving,
+  // use the shift LHS operand instead; isSignTest may change 'Pred', so only
+  // do that if we're sure to not continue on in this function.
+  if (Shl->hasNoSignedWrap() && isSignTest(Pred, *C))
+    return new ICmpInst(Pred, X, Constant::getNullValue(ShType));
+
+  // A 'shl nuw' is just shifting out zeros, so adjust the compare constant
+  // and eliminate the shift.
+  if (Shl->hasNoUnsignedWrap()) {
+    if (Pred == ICmpInst::ICMP_UGT) {
+      // icmp Pred (shl nuw X, ShiftAmt), C --> icmp Pred X, (C >>u ShiftAmt)
+      APInt ShiftedC = C->lshr(*ShiftAmt);
+      return new ICmpInst(Pred, X, ConstantInt::get(ShType, ShiftedC));
+    }
+    if (Pred == ICmpInst::ICMP_EQ || Pred == ICmpInst::ICMP_NE) {
+      // This is the same code as the UGT case, but assert the pre-condition
+      // that is needed for this to work with equality predicates.
+      assert(C->lshr(*ShiftAmt).shl(*ShiftAmt) == *C &&
+             "Compare known true or false was not folded");
+      APInt ShiftedC = C->lshr(*ShiftAmt);
+      return new ICmpInst(Pred, X, ConstantInt::get(ShType, ShiftedC));
+    }
+    if (Pred == ICmpInst::ICMP_ULT) {
+      // ULE is the same as above, but ULE is canonicalized to ULT, so convert:
+      // (X << S) <=u C is equiv to X <=u (C >> S) for all C
+      // (X << S) <u (C + 1) is equiv to X <u (C >> S) + 1 if C <u ~0u
+      // (X << S) <u C is equiv to X <u ((C - 1) >> S) + 1 if C >u 0
+      assert(C->ugt(0) && "ult 0 should have been eliminated");
+      APInt ShiftedC = (*C - 1).lshr(*ShiftAmt) + 1;
+      return new ICmpInst(Pred, X, ConstantInt::get(ShType, ShiftedC));
+    }
+  }
+
   if (Cmp.isEquality()) {
-    // If the shift is NUW, then it is just shifting out zeros, no need for an
-    // AND.
-    Constant *LShrC = ConstantInt::get(Shl->getType(), C->lshr(*ShiftAmt));
-    if (Shl->hasNoUnsignedWrap())
-      return new ICmpInst(Pred, X, LShrC);
+    Constant *LShrC = ConstantInt::get(ShType, C->lshr(*ShiftAmt));
 
     // If the shift is NSW and we compare to 0, then it is just shifting out
     // sign bits, no need for an AND either.
@@ -1923,8 +1954,9 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
       return new ICmpInst(Pred, X, LShrC);
 
     if (Shl->hasOneUse()) {
-      // Otherwise, strength reduce the shift into an and.
-      Constant *Mask = ConstantInt::get(Shl->getType(),
+      // Otherwise, strength-reduce the shift into an 'and'.
+      Constant *Mask = ConstantInt::get(
+          ShType,
           APInt::getLowBitsSet(TypeBits, TypeBits - ShiftAmt->getZExtValue()));
 
       Value *And = Builder->CreateAnd(X, Mask, Shl->getName() + ".mask");
@@ -1932,39 +1964,16 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
     }
   }
 
-  // If this is a signed comparison to 0 and the shift is sign preserving,
-  // use the shift LHS operand instead; isSignTest may change 'Pred', so only
-  // do that if we're sure to not continue on in this function.
-  if (Shl->hasNoSignedWrap() && isSignTest(Pred, *C))
-    return new ICmpInst(Pred, X, Constant::getNullValue(X->getType()));
-
   // Otherwise, if this is a comparison of the sign bit, simplify to and/test.
   bool TrueIfSigned = false;
   if (Shl->hasOneUse() && isSignBitCheck(Pred, *C, TrueIfSigned)) {
     // (X << 31) <s 0  --> (X & 1) != 0
     Constant *Mask = ConstantInt::get(
-        X->getType(),
+        ShType,
         APInt::getOneBitSet(TypeBits, TypeBits - ShiftAmt->getZExtValue() - 1));
     Value *And = Builder->CreateAnd(X, Mask, Shl->getName() + ".mask");
     return new ICmpInst(TrueIfSigned ? ICmpInst::ICMP_NE : ICmpInst::ICMP_EQ,
-                        And, Constant::getNullValue(And->getType()));
-  }
-
-  // When the shift is nuw and pred is >u or <=u, comparison only really happens
-  // in the pre-shifted bits. Since InstSimplify canonicalizes <=u into <u, the
-  // <=u case can be further converted to match <u (see below).
-  if (Shl->hasNoUnsignedWrap() &&
-      (Pred == ICmpInst::ICMP_UGT || Pred == ICmpInst::ICMP_ULT)) {
-    // Derivation for the ult case:
-    // (X << S) <=u C is equiv to X <=u (C >> S) for all C
-    // (X << S) <u (C + 1) is equiv to X <u (C >> S) + 1 if C <u ~0u
-    // (X << S) <u C is equiv to X <u ((C - 1) >> S) + 1 if C >u 0
-    assert((Pred != ICmpInst::ICMP_ULT || C->ugt(0)) &&
-           "Encountered `ult 0` that should have been eliminated by "
-           "InstSimplify.");
-    APInt ShiftedC = Pred == ICmpInst::ICMP_ULT ? (*C - 1).lshr(*ShiftAmt) + 1
-                                                : C->lshr(*ShiftAmt);
-    return new ICmpInst(Pred, X, ConstantInt::get(X->getType(), ShiftedC));
+                        And, Constant::getNullValue(ShType));
   }
 
   // Transform (icmp pred iM (shl iM %v, N), C)
@@ -1977,8 +1986,8 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
   if (Shl->hasOneUse() && Amt != 0 && C->countTrailingZeros() >= Amt &&
       DL.isLegalInteger(TypeBits - Amt)) {
     Type *TruncTy = IntegerType::get(Cmp.getContext(), TypeBits - Amt);
-    if (X->getType()->isVectorTy())
-      TruncTy = VectorType::get(TruncTy, X->getType()->getVectorNumElements());
+    if (ShType->isVectorTy())
+      TruncTy = VectorType::get(TruncTy, ShType->getVectorNumElements());
     Constant *NewC =
         ConstantInt::get(TruncTy, C->ashr(*ShiftAmt).trunc(TypeBits - Amt));
     return new ICmpInst(Pred, Builder->CreateTrunc(X, TruncTy), NewC);
@@ -2842,6 +2851,31 @@ Instruction *InstCombiner::foldICmpBinOp(ICmpInst &I) {
   // icmp slt X, (Y + 1) -> icmp sle X, Y
   if (C && NoOp1WrapProblem && Pred == CmpInst::ICMP_SLT && match(D, m_One()))
     return new ICmpInst(CmpInst::ICMP_SLE, Op0, C);
+
+  // TODO: The subtraction-related identities shown below also hold, but
+  // canonicalization from (X -nuw 1) to (X + -1) means that the combinations
+  // wouldn't happen even if they were implemented.
+  //
+  // icmp ult (X - 1), Y -> icmp ule X, Y
+  // icmp uge (X - 1), Y -> icmp ugt X, Y
+  // icmp ugt X, (Y - 1) -> icmp uge X, Y
+  // icmp ule X, (Y - 1) -> icmp ult X, Y
+
+  // icmp ule (X + 1), Y -> icmp ult X, Y
+  if (A && NoOp0WrapProblem && Pred == CmpInst::ICMP_ULE && match(B, m_One()))
+    return new ICmpInst(CmpInst::ICMP_ULT, A, Op1);
+
+  // icmp ugt (X + 1), Y -> icmp uge X, Y
+  if (A && NoOp0WrapProblem && Pred == CmpInst::ICMP_UGT && match(B, m_One()))
+    return new ICmpInst(CmpInst::ICMP_UGE, A, Op1);
+
+  // icmp uge X, (Y + 1) -> icmp ugt X, Y
+  if (C && NoOp1WrapProblem && Pred == CmpInst::ICMP_UGE && match(D, m_One()))
+    return new ICmpInst(CmpInst::ICMP_UGT, Op0, C);
+
+  // icmp ult X, (Y + 1) -> icmp ule X, Y
+  if (C && NoOp1WrapProblem && Pred == CmpInst::ICMP_ULT && match(D, m_One()))
+    return new ICmpInst(CmpInst::ICMP_ULE, Op0, C);
 
   // if C1 has greater magnitude than C2:
   //  icmp (X + C1), (Y + C2) -> icmp (X + C3), Y

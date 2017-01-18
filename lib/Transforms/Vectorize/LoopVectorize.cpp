@@ -80,6 +80,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Type.h"
+#include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/IR/Verifier.h"
@@ -4090,13 +4091,10 @@ void InnerLoopVectorizer::vectorizeLoop() {
       // we already fixed them.
       assert(LCSSAPhi->getNumIncomingValues() < 3 && "Invalid LCSSA PHI");
 
-      // We found our reduction value exit-PHI. Update it with the
+      // We found a reduction value exit-PHI. Update it with the
       // incoming bypass edge.
-      if (LCSSAPhi->getIncomingValue(0) == LoopExitInst) {
-        // Add an edge coming from the bypass.
+      if (LCSSAPhi->getIncomingValue(0) == LoopExitInst)
         LCSSAPhi->addIncoming(ReducedPartRdx, LoopMiddleBlock);
-        break;
-      }
     } // end of the LCSSA phi scan.
 
     // Fix the scalar loop reduction variable with the incoming reduction sum
@@ -5601,6 +5599,13 @@ void LoopVectorizationLegality::collectLoopUniforms() {
       // is consecutive-like, the pointer operand should remain uniform.
       else if (hasConsecutiveLikePtrOperand(&I))
         ConsecutiveLikePtrs.insert(Ptr);
+
+      // Otherwise, if the memory instruction will be vectorized and its
+      // pointer operand is non-consecutive-like, the memory instruction should
+      // be a gather or scatter operation. Its pointer operand will be
+      // non-uniform.
+      else
+        PossibleNonUniformPtrs.insert(Ptr);
     }
 
   // Add to the Worklist all consecutive and consecutive-like pointers that
@@ -6949,9 +6954,9 @@ unsigned LoopVectorizationCostModel::getInstructionCost(Instruction *I,
     } else if (Legal->isUniform(Op2)) {
       Op2VK = TargetTransformInfo::OK_UniformValue;
     }
-
-    return TTI.getArithmeticInstrCost(I->getOpcode(), VectorTy, Op1VK, Op2VK,
-                                      Op1VP, Op2VP);
+    SmallVector<const Value *, 4> Operands(I->operand_values()); 
+    return TTI.getArithmeticInstrCost(I->getOpcode(), VectorTy, Op1VK,
+                                      Op2VK, Op1VP, Op2VP, Operands);
   }
   case Instruction::Select: {
     SelectInst *SI = cast<SelectInst>(I);
@@ -7641,7 +7646,7 @@ PreservedAnalyses LoopVectorizePass::run(Function &F,
     auto &TTI = AM.getResult<TargetIRAnalysis>(F);
     auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
     auto &BFI = AM.getResult<BlockFrequencyAnalysis>(F);
-    auto *TLI = AM.getCachedResult<TargetLibraryAnalysis>(F);
+    auto &TLI = AM.getResult<TargetLibraryAnalysis>(F);
     auto &AA = AM.getResult<AAManager>(F);
     auto &AC = AM.getResult<AssumptionAnalysis>(F);
     auto &DB = AM.getResult<DemandedBitsAnalysis>(F);
@@ -7650,10 +7655,11 @@ PreservedAnalyses LoopVectorizePass::run(Function &F,
     auto &LAM = AM.getResult<LoopAnalysisManagerFunctionProxy>(F).getManager();
     std::function<const LoopAccessInfo &(Loop &)> GetLAA =
         [&](Loop &L) -> const LoopAccessInfo & {
-      return LAM.getResult<LoopAccessAnalysis>(L);
+      LoopStandardAnalysisResults AR = {AA, AC, DT, LI, SE, TLI, TTI};
+      return LAM.getResult<LoopAccessAnalysis>(L, AR);
     };
     bool Changed =
-        runImpl(F, SE, LI, TTI, DT, BFI, TLI, DB, AA, AC, GetLAA, ORE);
+        runImpl(F, SE, LI, TTI, DT, BFI, &TLI, DB, AA, AC, GetLAA, ORE);
     if (!Changed)
       return PreservedAnalyses::all();
     PreservedAnalyses PA;
