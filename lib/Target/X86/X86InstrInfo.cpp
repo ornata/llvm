@@ -9772,31 +9772,30 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
     return false;
 
   // FIXME: Same as above.
-  if (MI.modifiesRegister(X86::RIP, &RI) ||
+  if (/*MI.modifiesRegister(X86::RIP, &RI) ||*/
       MI.readsRegister(X86::RIP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RIP) ||
       MI.getDesc().hasImplicitDefOfPhysReg(X86::RIP))
     return false;
 
   // Don't outline the frame setup or destroy for a function
+
   if (MI.getFlag(MachineInstr::MIFlag::FrameSetup) ||
       MI.getFlag(MachineInstr::MIFlag::FrameDestroy))
     return false;
 
-  if (MI.isCFIInstruction())
-    return false;
-
+/*
   if (isLoadFromStackSlot(MI, Dummy) || isStoreToStackSlot(MI, Dummy))
     return false;
 
   if (isLoadFromStackSlotPostFE(MI, Dummy) ||
       isStoreToStackSlotPostFE(MI, Dummy))
     return false;
-
-  if (MI.isLabel())
+*/
+  if (MI.isPosition())
     return false;
 
-  for (MachineOperand MOP : MI.operands())
+  for (const MachineOperand &MOP : MI.operands())
     if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || 
         MOP.isFI() || MOP.isTargetIndex())
         return false;
