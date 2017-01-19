@@ -299,17 +299,17 @@ private:
   /// \brief Set the suffix indices of the leaves to the start indices of their
   /// respective suffices.
   void setSuffixIndices(SuffixTreeNode &CurrentNode, size_t LabelHeight) {
-    bool IsLeaf = true;
+    bool IsLeaf = CurrentNode.Children.size() == 0 && &CurrentNode != Root;
 
     for (auto &ChildPair : CurrentNode.Children) {
       assert(ChildPair.second && "Node had a null child!");
-      IsLeaf = false;
       setSuffixIndices(*ChildPair.second,
                              LabelHeight + ChildPair.second->size());
     }
 
     if (IsLeaf) {
       CurrentNode.SuffixIdx = Str.size() - LabelHeight;
+      assert(CurrentNode.Parent  && "CurrentNode had no parent!");
       CurrentNode.Parent->OccurrenceCount++;
     }
   }
@@ -874,7 +874,7 @@ void MachineOutliner::buildCandidateList(
   std::vector<unsigned> CandidateSequence;
 
   for (ST.bestRepeatedSubstring(CandidateSequence);
-       CandidateSequence.size() > 0;
+       CandidateSequence.size() > 2;
        ST.bestRepeatedSubstring(CandidateSequence)) {
 
     std::vector<size_t> Occurrences;
