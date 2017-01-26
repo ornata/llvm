@@ -92,6 +92,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/LoopVersioning.h"
 #include "llvm/Transforms/Vectorize.h"
@@ -2134,8 +2135,6 @@ struct LoopVectorize : public FunctionPass {
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<AssumptionCacheTracker>();
-    AU.addRequiredID(LoopSimplifyID);
-    AU.addRequiredID(LCSSAID);
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<LoopInfoWrapperPass>();
@@ -3599,37 +3598,18 @@ static Value *addFastMathFlag(Value *V) {
   return V;
 }
 
-/// \brief Estimate the overhead of scalarizing a value based on its type.
-/// Insert and Extract are set if the result needs to be inserted and/or
-/// extracted from vectors.
-static unsigned getScalarizationOverhead(Type *Ty, bool Insert, bool Extract,
-                                         const TargetTransformInfo &TTI) {
-  if (Ty->isVoidTy())
-    return 0;
-
-  assert(Ty->isVectorTy() && "Can only scalarize vectors");
-  unsigned Cost = 0;
-
-  for (unsigned I = 0, E = Ty->getVectorNumElements(); I < E; ++I) {
-    if (Extract)
-      Cost += TTI.getVectorInstrCost(Instruction::ExtractElement, Ty, I);
-    if (Insert)
-      Cost += TTI.getVectorInstrCost(Instruction::InsertElement, Ty, I);
-  }
-
-  return Cost;
-}
-
 /// \brief Estimate the overhead of scalarizing an Instruction based on the
 /// types of its operands and return value.
 static unsigned getScalarizationOverhead(SmallVectorImpl<Type *> &OpTys,
                                          Type *RetTy,
                                          const TargetTransformInfo &TTI) {
-  unsigned ScalarizationCost =
-      getScalarizationOverhead(RetTy, true, false, TTI);
+  unsigned ScalarizationCost = 0;
+
+  if (!RetTy->isVoidTy())
+    ScalarizationCost += TTI.getScalarizationOverhead(RetTy, true, false);
 
   for (Type *Ty : OpTys)
-    ScalarizationCost += getScalarizationOverhead(Ty, false, true, TTI);
+    ScalarizationCost += TTI.getScalarizationOverhead(Ty, false, true);
 
   return ScalarizationCost;
 }
@@ -3641,14 +3621,15 @@ static unsigned getScalarizationOverhead(Instruction *I, unsigned VF,
   if (VF == 1)
     return 0;
 
+  unsigned Cost = 0;
   Type *RetTy = ToVectorTy(I->getType(), VF);
+  if (!RetTy->isVoidTy())
+    Cost += TTI.getScalarizationOverhead(RetTy, true, false);
 
-  SmallVector<Type *, 4> OpTys;
-  unsigned OperandsNum = I->getNumOperands();
-  for (unsigned OpInd = 0; OpInd < OperandsNum; ++OpInd)
-    OpTys.push_back(ToVectorTy(I->getOperand(OpInd)->getType(), VF));
+  SmallVector<const Value *, 4> Operands(I->operand_values());
+  Cost += TTI.getOperandsScalarizationOverhead(Operands, VF);
 
-  return getScalarizationOverhead(OpTys, RetTy, TTI);
+  return Cost;
 }
 
 // Estimate cost of a call instruction CI if it were vectorized with factor VF.
@@ -6017,7 +5998,7 @@ void InterleavedAccessInfo::analyzeInterleaving(
     if (Group->getNumMembers() != Group->getFactor())
       releaseGroup(Group);
 
-  // Remove interleaved groups with gaps (currently only loads) whose memory 
+  // Remove interleaved groups with gaps (currently only loads) whose memory
   // accesses may wrap around. We have to revisit the getPtrStride analysis, 
   // this time with ShouldCheckWrap=true, since collectConstStrideAccesses does 
   // not check wrapping (see documentation there).
@@ -6714,8 +6695,8 @@ int LoopVectorizationCostModel::computePredInstDiscount(
     // Compute the scalarization overhead of needed insertelement instructions
     // and phi nodes.
     if (Legal->isScalarWithPredication(I) && !I->getType()->isVoidTy()) {
-      ScalarCost += getScalarizationOverhead(ToVectorTy(I->getType(), VF), true,
-                                             false, TTI);
+      ScalarCost += TTI.getScalarizationOverhead(ToVectorTy(I->getType(), VF),
+                                                 true, false);
       ScalarCost += VF * TTI.getCFInstrCost(Instruction::PHI);
     }
 
@@ -6730,8 +6711,8 @@ int LoopVectorizationCostModel::computePredInstDiscount(
         if (canBeScalarized(J))
           Worklist.push_back(J);
         else if (needsExtract(J))
-          ScalarCost += getScalarizationOverhead(ToVectorTy(J->getType(), VF),
-                                                 false, true, TTI);
+          ScalarCost += TTI.getScalarizationOverhead(
+                              ToVectorTy(J->getType(),VF), false, true);
       }
 
     // Scale the total scalar cost by block probability.
@@ -7169,9 +7150,7 @@ INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LCSSAWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
 INITIALIZE_PASS_DEPENDENCY(LoopAccessLegacyAnalysis)
 INITIALIZE_PASS_DEPENDENCY(DemandedBitsWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(OptimizationRemarkEmitterWrapperPass)
@@ -7618,6 +7597,16 @@ bool LoopVectorizePass::runImpl(
   if (!TTI->getNumberOfRegisters(true) && TTI->getMaxInterleaveFactor(1) < 2)
     return false;
 
+  bool Changed = false;
+
+  // The vectorizer requires loops to be in simplified form.
+  // Since simplification may add new inner loops, it has to run before the
+  // legality and profitability checks. This means running the loop vectorizer
+  // will simplify all loops, regardless of whether anything end up being
+  // vectorized.
+  for (auto &L : *LI)
+    Changed |= simplifyLoop(L, DT, LI, SE, AC, false /* PreserveLCSSA */);
+
   // Build up a worklist of inner-loops to vectorize. This is necessary as
   // the act of vectorizing or partially unrolling a loop creates new loops
   // and can invalidate iterators across the loops.
@@ -7629,9 +7618,15 @@ bool LoopVectorizePass::runImpl(
   LoopsAnalyzed += Worklist.size();
 
   // Now walk the identified inner loops.
-  bool Changed = false;
-  while (!Worklist.empty())
-    Changed |= processLoop(Worklist.pop_back_val());
+  while (!Worklist.empty()) {
+    Loop *L = Worklist.pop_back_val();
+
+    // For the inner loops we actually process, form LCSSA to simplify the
+    // transform.
+    Changed |= formLCSSARecursively(*L, *DT, LI, SE);
+
+    Changed |= processLoop(L);
+  }
 
   // Process each loop nest in the function.
   return Changed;

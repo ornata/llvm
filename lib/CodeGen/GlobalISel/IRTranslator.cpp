@@ -60,28 +60,30 @@ void IRTranslator::getAnalysisUsage(AnalysisUsage &AU) const {
 
 unsigned IRTranslator::getOrCreateVReg(const Value &Val) {
   unsigned &ValReg = ValToVReg[&Val];
-  // Check if this is the first time we see Val.
-  if (!ValReg) {
-    // Fill ValRegsSequence with the sequence of registers
-    // we need to concat together to produce the value.
-    assert(Val.getType()->isSized() &&
-           "Don't know how to create an empty vreg");
-    unsigned VReg = MRI->createGenericVirtualRegister(LLT{*Val.getType(), *DL});
-    ValReg = VReg;
 
-    if (auto CV = dyn_cast<Constant>(&Val)) {
-      bool Success = translate(*CV, VReg);
-      if (!Success) {
-        if (!TPC->isGlobalISelAbortEnabled()) {
-          MF->getProperties().set(
-              MachineFunctionProperties::Property::FailedISel);
-          return VReg;
-        }
-        reportTranslationError(Val, "unable to translate constant");
+  if (ValReg)
+    return ValReg;
+
+  // Fill ValRegsSequence with the sequence of registers
+  // we need to concat together to produce the value.
+  assert(Val.getType()->isSized() &&
+         "Don't know how to create an empty vreg");
+  unsigned VReg = MRI->createGenericVirtualRegister(LLT{*Val.getType(), *DL});
+  ValReg = VReg;
+
+  if (auto CV = dyn_cast<Constant>(&Val)) {
+    bool Success = translate(*CV, VReg);
+    if (!Success) {
+      if (!TPC->isGlobalISelAbortEnabled()) {
+        MF->getProperties().set(
+            MachineFunctionProperties::Property::FailedISel);
+        return VReg;
       }
+      reportTranslationError(Val, "unable to translate constant");
     }
   }
-  return ValReg;
+
+  return VReg;
 }
 
 int IRTranslator::getOrCreateFrameIndex(const AllocaInst &AI) {
@@ -523,8 +525,8 @@ bool IRTranslator::translateKnownIntrinsic(const CallInst &CI, Intrinsic::ID ID,
   case Intrinsic::dbg_declare:
   case Intrinsic::dbg_value:
     // FIXME: these obviously need to be supported properly.
-    MF->getProperties().set(
-          MachineFunctionProperties::Property::FailedISel);
+    if (!TPC->isGlobalISelAbortEnabled())
+      MF->getProperties().set(MachineFunctionProperties::Property::FailedISel);
     return true;
   case Intrinsic::uadd_with_overflow:
     return translateOverflowIntrinsic(CI, TargetOpcode::G_UADDE, MIRBuilder);
@@ -580,6 +582,9 @@ bool IRTranslator::translateCall(const User &U, MachineIRBuilder &MIRBuilder) {
   const CallInst &CI = cast<CallInst>(U);
   auto TII = MF->getTarget().getIntrinsicInfo();
   const Function *F = CI.getCalledFunction();
+
+  if (CI.isInlineAsm())
+    return false;
 
   if (!F || !F->isIntrinsic()) {
     unsigned Res = CI.getType()->isVoidTy() ? 0 : getOrCreateVReg(CI);
@@ -696,22 +701,26 @@ bool IRTranslator::translateLandingPad(const User &U,
   MIRBuilder.buildInstr(TargetOpcode::EH_LABEL)
     .addSym(MF->addLandingPad(&MBB));
 
+  SmallVector<LLT, 2> Tys;
+  for (Type *Ty : cast<StructType>(LP.getType())->elements())
+    Tys.push_back(LLT{*Ty, *DL});
+  assert(Tys.size() == 2 && "Only two-valued landingpads are supported");
+
   // Mark exception register as live in.
   SmallVector<unsigned, 2> Regs;
   SmallVector<uint64_t, 2> Offsets;
-  LLT p0 = LLT::pointer(0, DL->getPointerSizeInBits());
   if (unsigned Reg = TLI.getExceptionPointerRegister(PersonalityFn)) {
-    unsigned VReg = MRI->createGenericVirtualRegister(p0);
+    unsigned VReg = MRI->createGenericVirtualRegister(Tys[0]);
     MIRBuilder.buildCopy(VReg, Reg);
     Regs.push_back(VReg);
     Offsets.push_back(0);
   }
 
   if (unsigned Reg = TLI.getExceptionSelectorRegister(PersonalityFn)) {
-    unsigned VReg = MRI->createGenericVirtualRegister(p0);
+    unsigned VReg = MRI->createGenericVirtualRegister(Tys[1]);
     MIRBuilder.buildCopy(VReg, Reg);
     Regs.push_back(VReg);
-    Offsets.push_back(p0.getSizeInBits());
+    Offsets.push_back(Tys[0].getSizeInBits());
   }
 
   MIRBuilder.buildSequence(getOrCreateVReg(LP), Regs, Offsets);
