@@ -9881,14 +9881,43 @@ bool X86InstrInfo::functionIsSafeToOutlineFrom(Function &F) const {
   return F.hasFnAttribute(Attribute::NoRedZone);
 }
 
+bool isFixablePostOutline(MachineInstr &MI) {
+    if (!isFrameStoreOpcode(MI.getOpcode()) && !isFrameLoadOpcode(MI.getOpcode()))
+        return false;
+
+    switch(MI.getOpcode()) {
+        case X86::MOV64mr:
+            return MI.getOperand(0).getReg() == X86::RSP;
+        case X86::MOV64rm:
+            return MI.getOperand(5).getReg() == X86::RSP;
+        default:
+            break;
+    }
+
+    return false;
+}
+
 bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
-  int Dummy;
 
   // Don't outline returns or basic block terminators.
   if (MI.isReturn() || MI.isTerminator())
     return false;
 
-  // Don't outline anything that modifies or reads from the stack pointer.
+ // FIXME: Same as above.
+  if (MI.modifiesRegister(X86::RIP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(X86::RIP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RIP))
+    return false;
+
+  if (MI.isPosition())
+    return false;
+
+  for (const MachineOperand &MOP : MI.operands())
+    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || 
+        MOP.isFI() || MOP.isTargetIndex())
+        return false;
+
+    // Don't outline anything that modifies or reads from the stack pointer.
   //
   // FIXME: There are instructions which are being manually built without
   // explicit uses/defs so we also have to check the MCInstrDesc. We should be
@@ -9901,36 +9930,7 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
       MI.readsRegister(X86::RSP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
       MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP))
-    return false;
-
-  // FIXME: Same as above.
-  if (/*MI.modifiesRegister(X86::RIP, &RI) ||*/
-      MI.readsRegister(X86::RIP, &RI) ||
-      MI.getDesc().hasImplicitUseOfPhysReg(X86::RIP) ||
-      MI.getDesc().hasImplicitDefOfPhysReg(X86::RIP))
-    return false;
-
-  // Don't outline the frame setup or destroy for a function
-
-  if (MI.getFlag(MachineInstr::MIFlag::FrameSetup) ||
-      MI.getFlag(MachineInstr::MIFlag::FrameDestroy))
-    return false;
-
-/*
-  if (isLoadFromStackSlot(MI, Dummy) || isStoreToStackSlot(MI, Dummy))
-    return false;
-
-  if (isLoadFromStackSlotPostFE(MI, Dummy) ||
-      isStoreToStackSlotPostFE(MI, Dummy))
-    return false;
-*/
-  if (MI.isPosition())
-    return false;
-
-  for (const MachineOperand &MOP : MI.operands())
-    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || 
-        MOP.isFI() || MOP.isTargetIndex())
-        return false;
+    return isFixablePostOutline(MI);
 
   return true;
 }
@@ -9939,6 +9939,38 @@ void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                         MachineFunction &MF) const {
   MachineInstr *retq = BuildMI(MF, DebugLoc(), get(X86::RETQ));
   MBB.insert(MBB.end(), retq);
+
+  bool PrintName = false;
+  // hack: fixup stack stuff
+  for (MachineInstr &MI : MBB) {
+    if (isFrameStoreOpcode(MI.getOpcode()) &&
+        MI.getOperand(0).getReg() == X86::RSP) {
+            // Update the offset by the size of the pushed address.
+            errs() << "Before: ";
+            MI.dump();
+            auto &Disp = MI.getOperand(X86::AddrDisp);
+            int64_t oldDispVal = Disp.getImm();
+            Disp.setImm(oldDispVal + 8);
+            PrintName = true;
+            errs() << "After: ";
+            MI.dump();
+        }
+
+    if (isFrameLoadOpcode(MI.getOpcode()) && MI.getOperand(5).getReg() == X86::RSP) {
+        // Update the offset by the size of the pushed address.
+        errs() << "Before: ";
+        MI.dump();
+        auto &Disp = MI.getOperand(5 + X86::AddrDisp);
+        int64_t oldDispVal = Disp.getImm();
+        Disp.setImm(oldDispVal + 8);
+        PrintName = true;
+        errs() << "After: ";
+        MI.dump();
+        }
+    }
+
+  if (PrintName)
+    errs() << "Contained case we want to handle: " << MF.getName() << "\n";
 }
 
 void X86InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,

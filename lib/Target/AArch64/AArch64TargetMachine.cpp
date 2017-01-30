@@ -73,7 +73,7 @@ static cl::opt<bool>
 static cl::opt<bool> EnableCollectLOH(
     "aarch64-enable-collect-loh",
     cl::desc("Enable the pass that emits the linker optimization hints (LOH)"),
-    cl::init(true), cl::Hidden);
+    cl::init(false), cl::Hidden);
 
 static cl::opt<bool>
     EnableDeadRegisterElimination("aarch64-enable-dead-defs", cl::Hidden,
@@ -502,10 +502,12 @@ void AArch64PassConfig::addPreSched2() {
 void AArch64PassConfig::addPreEmitPass() {
   if (EnableA53Fix835769)
     addPass(createAArch64A53Fix835769());
+
   // Relax conditional branch instructions if they're otherwise out of
   // range of their destination.
   if (BranchRelaxation)
     addPass(&BranchRelaxationPassID);
+
 
   if (TM->getOptLevel() != CodeGenOpt::None && EnableCollectLOH &&
       TM->getTargetTriple().isOSBinFormatMachO())

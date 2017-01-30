@@ -4297,3 +4297,113 @@ AArch64InstrInfo::getSerializableBitmaskMachineOperandTargetFlags() const {
       {MO_TLS, "aarch64-tls"}};
   return makeArrayRef(TargetFlags);
 }
+
+bool AArch64InstrInfo::functionIsSafeToOutlineFrom(Function &F) const {
+  return F.hasFnAttribute(Attribute::NoRedZone);
+}
+
+bool AArch64InstrInfo::isLegalToOutline(MachineInstr &MI) const {
+
+  if (MI.isDebugValue())
+    return false;
+
+  // Don't outline returns or basic block terminators.
+  if (MI.isReturn() || MI.isTerminator())
+    return false;
+  
+ // FIXME: Same as above.
+  
+  if (MI.modifiesRegister(AArch64::SP, &RI) ||
+      MI.readsRegister(AArch64::SP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP))
+    return false;
+    
+
+  if (MI.isPosition())
+    return false;
+
+  for (const MachineOperand &MOP : MI.operands())
+    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || 
+        MOP.isFI() || MOP.isTargetIndex())
+        return false;
+
+  // FIXME: Don't allow LR loads.
+  
+  if (MI.modifiesRegister(AArch64::LR, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::LR) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::LR))
+        return false;
+        
+    //return isFixablePostOutline(MI);
+    
+  return true;
+}
+
+void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                                        MachineFunction &MF) const {
+  MachineInstr *ADDXri = BuildMI(MF, DebugLoc(), get(AArch64::ADDXri), AArch64::SP)
+            .addReg(AArch64::SP)
+            .addImm(16)
+            .addImm(0);
+  MBB.insert(MBB.end(), ADDXri);
+  MachineInstr *ret = BuildMI(MF, DebugLoc(), get(AArch64::RET))
+            .addReg(AArch64::LR, RegState::Undef);
+  MBB.insert(MBB.end(), ret);
+
+  /*
+  bool PrintName = false;
+  // hack: fixup stack stuff
+  
+  for (MachineInstr &MI : MBB) {
+    if (isFrameStoreOpcode(MI.getOpcode()) &&
+        MI.getOperand(0).getReg() == AArch64::LR) {
+            // Update the offset by the size of the pushed address.
+            errs() << "Before: ";
+            MI.dump();
+            auto &Disp = MI.getOperand(X86::AddrDisp);
+            int64_t oldDispVal = Disp.getImm();
+            Disp.setImm(oldDispVal + 8);
+            PrintName = true;
+            errs() << "After: ";
+            MI.dump();
+        }
+
+    if (isFrameLoadOpcode(MI.getOpcode()) && MI.getOperand(5).getReg() == AArch64::LR) {
+        // Update the offset by the size of the pushed address.
+        errs() << "Before: ";
+        MI.dump();
+        auto &Disp = MI.getOperand(5 + X86::AddrDisp);
+        int64_t oldDispVal = Disp.getImm();
+        Disp.setImm(oldDispVal + 8);
+        PrintName = true;
+        errs() << "After: ";
+        MI.dump();
+        }
+    }
+
+  if (PrintName)
+    errs() << "Contained case we want to handle: " << MF.getName() << "\n";
+    */
+}
+
+void AArch64InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,
+                                        MachineFunction &MF) const {
+  MachineInstr *SUBXri = BuildMI(MF, DebugLoc(), get(AArch64::SUBXri), AArch64::SP)
+            .addReg(AArch64::SP)
+            .addImm(16)
+            .addImm(0);
+  MBB.insert(MBB.begin(), SUBXri);
+  return;
+}
+
+MachineBasicBlock::iterator
+AArch64InstrInfo::insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator &It,
+                                 MachineFunction &MF) const {
+
+  It = MBB.insert(It, BuildMI(MF, DebugLoc(), get(AArch64::BL)).addGlobalAddress
+    (M.getNamedValue(MF.getName())));
+
+  return It;
+}

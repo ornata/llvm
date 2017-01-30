@@ -253,6 +253,21 @@ private:
                              ArrayRef<MachineOperand> Cond) const;
   bool substituteCmpToZero(MachineInstr &CmpInstr, unsigned SrcReg,
                            const MachineRegisterInfo *MRI) const;
+
+
+  bool functionIsSafeToOutlineFrom(Function &F) const override;
+bool isLegalToOutline(MachineInstr &MI) const override;
+
+void insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                                        MachineFunction &MF) const override;
+
+void insertOutlinerPrologue(MachineBasicBlock &MBB,
+                                        MachineFunction &MF) const override;
+
+MachineBasicBlock::iterator
+insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator &It,
+                                 MachineFunction &MF) const override;
 };
 
 /// emitFrameOffset - Emit instructions as needed to set DestReg to SrcReg
@@ -318,6 +333,7 @@ static inline bool isCondBranchOpcode(int Opc) {
 }
 
 static inline bool isIndirectBranchOpcode(int Opc) { return Opc == AArch64::BR; }
+
 
 } // end namespace llvm
 

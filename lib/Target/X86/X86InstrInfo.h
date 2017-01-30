@@ -603,6 +603,10 @@ private:
                                      unsigned &SrcOpIdx2) const;
 
 public:
+  /*
+  MachineInstr& X86InstrInfo::fixOutlineStackOffset(MachineInstr &MI) const override;
+  */
+
   bool functionIsSafeToOutlineFrom(Function &F) const override;
 
   bool isLegalToOutline(MachineInstr &MI) const override;
