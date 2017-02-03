@@ -254,6 +254,9 @@ private:
   /// The end index of each leaf in the tree.
   size_t LeafEndIdx = -1;
 
+  /// The overhead of inserting an outlined function. By default this is 2.
+  unsigned Overhead = 2;
+
   /// \brief Helper struct which keeps track of the next insertion point in
   /// Ukkonen's algorithm.
   struct ActiveState {
@@ -302,12 +305,16 @@ private:
 
   /// \brief Set the suffix indices of the leaves to the start indices of their
   /// respective suffices.
-  void setSuffixIndices(SuffixTreeNode &CurrentNode, size_t LabelHeight) {
-    bool IsLeaf = CurrentNode.Children.size() == 0 && &CurrentNode != Root;
+  void setSuffixIndices(SuffixTreeNode *CurrentNode, size_t LabelHeight) {
 
-    for (auto &ChildPair : CurrentNode.Children) {
+    if (!CurrentNode)
+      return;
+
+    bool IsLeaf = CurrentNode->Children.size() == 0 && CurrentNode != Root;
+
+    for (auto &ChildPair : CurrentNode->Children) {
       assert(ChildPair.second && "Node had a null child!");
-      setSuffixIndices(*ChildPair.second,
+      setSuffixIndices(ChildPair.second,
                              LabelHeight + ChildPair.second->size());
     }
 
@@ -315,10 +322,10 @@ private:
     // If the node is a leaf, then we need to assign it a suffix index and also
     // bump its parent's occurrence count.
     if (IsLeaf) {
-      CurrentNode.SuffixIdx = Str.size() - LabelHeight;
-      assert(CurrentNode.Parent  && "CurrentNode had no parent!");
-      CurrentNode.Parent->OccurrenceCount++;
-      LeafVector[CurrentNode.SuffixIdx] = &CurrentNode;
+      CurrentNode->SuffixIdx = Str.size() - LabelHeight;
+      assert(CurrentNode->Parent  && "CurrentNode had no parent!");
+      CurrentNode->Parent->OccurrenceCount++;
+      LeafVector[CurrentNode->SuffixIdx] = CurrentNode;
     }
   }
 
@@ -474,7 +481,7 @@ public:
 
       // The string can't have length 1 and be beneficial because we always
       // have to replace it with a call.
-      if (StringLen < 2)
+      if (StringLen < 4)
         return;
 
       size_t Occurrences = CurrNode.Parent->OccurrenceCount;
@@ -484,12 +491,11 @@ public:
         return;
 
       // Number of instructions we would have by outlining this sequence.
-      size_t OutlinedInstructions = StringLen + 3 + Occurrences;
+      //size_t OutlinedInstructions = StringLen + Overhead + Occurrences;
+      size_t OutlinedInstructions = StringLen + 1 + Overhead * Occurrences;
       size_t NotOutlinedInstructions = StringLen * Occurrences;
-      size_t Benefit;
-      if (OutlinedInstructions > NotOutlinedInstructions)
-        Benefit = 0;
-      else
+      size_t Benefit = 0;
+      if (OutlinedInstructions < NotOutlinedInstructions)
         Benefit = NotOutlinedInstructions - OutlinedInstructions;
 
       // We didn't save anything or do better, so give up.
@@ -497,7 +503,7 @@ public:
       // prologue, epilogue, and call.
       // FIXME: 2 should be target defined. It is the number of instructions
       // necessary for the function call, epilogue, prologue, etc.
-      if (Benefit < 1 || Benefit <= MaxBenefit)
+      if (Benefit < MaxBenefit + 1)
         return;
 
       MaxBenefit = Benefit;
@@ -593,56 +599,77 @@ public:
   ///
   /// This is used in the outlining algorithm to reduce the number of
   /// overlapping candidates
-  void prune(SuffixTreeNode *N, size_t Len) {
-
+  bool prune(SuffixTreeNode *N, size_t Len) {
+    bool NoOverlap = true;
     std::vector<unsigned> IndicesToPrune;
     for (auto &ChildPair : N->Children) {
       SuffixTreeNode *M = ChildPair.second;
 
       if (M && M->IsInTree && M->isLeaf()) {
         IndicesToPrune.push_back(M->SuffixIdx);
+        M->IsInTree = false;
       }
     }
 
     // Remove each suffix we have to prune from the tree.
-    unsigned Offset = 0;
-    for (unsigned CurrentSuffix = 0; CurrentSuffix < Len; CurrentSuffix++) {
+    unsigned Offset = 1;
+    for (unsigned CurrentSuffix = 1; CurrentSuffix < Len; CurrentSuffix++) {
       for (unsigned I: IndicesToPrune) {
-        if (I + Offset < LeafVector.size())
-          LeafVector[I + Offset]->IsInTree = false;
+        if (I + Offset < LeafVector.size()) {
+
+          if (LeafVector[I + Offset]->IsInTree) {
+            LeafVector[I + Offset]->IsInTree = false;
+          } else {
+            NoOverlap = false;
+          }
+
+          SuffixTreeNode *Parent = LeafVector[I + Offset]->Parent;
+          if (Parent->OccurrenceCount > 0) {
+            Parent->OccurrenceCount--;
+            Parent->IsInTree = (Parent->OccurrenceCount > 1);
+          }
+        }
       }
       Offset++;
     }
 
-    // For each suffix of N's string, reduce the number of occurrences of that
-    // node by the number of occurrences of N. If there are no occurrences,
-    // remove that node from the tree.
-    for (SuffixTreeNode *T = N->Link; T && T != Root; T = T->Link) {
-      T->OccurrenceCount = (T->OccurrenceCount > N->OccurrenceCount) ?
-                            T->OccurrenceCount -= N->OccurrenceCount :
-                            T->OccurrenceCount = 0; 
-      T->IsInTree = (T->OccurrenceCount > 1);
+    // We know we can never outline anything which starts one index back from
+    // the indices we want to outline. This is because our minimum outlining
+    // length is always 2.
+    for (unsigned I: IndicesToPrune) {
+      if (I > 0) {
+        SuffixTreeNode *Parent = LeafVector[I - 1]->Parent;
+
+        if (LeafVector[I - 1]->IsInTree) {
+            LeafVector[I - 1]->IsInTree = false;
+          } else {
+            NoOverlap = false;
+          }
+
+        if (Parent->OccurrenceCount > 0) {
+            Parent->OccurrenceCount--;
+            Parent->IsInTree = (Parent->OccurrenceCount > 1);
+        }
+      }
     }
 
-    // We removed every occurrence of the string associated with N, so every
-    // string it is a suffix of is no longer a candidate. Also throw N out.
-    for (SuffixTreeNode *T = N; T && T != Root; T = T->BackLink) {
-      T->IsInTree = false;
-      T->OccurrenceCount = 0;
-    }
+    N->IsInTree = false;
+    N->OccurrenceCount = 0;
+
+    return NoOverlap;
   }
 
   /// Find each occurrence of of a string in \p Str and prune their nodes.
   ///
   /// \param QueryString The string to search for.
   /// \param [out] Occurrences The start indices of each occurrence.
-  void findOccurrencesAndPrune(const std::vector<unsigned> &QueryString,
+  bool findOccurrencesAndPrune(const std::vector<unsigned> &QueryString,
                                std::vector<size_t> &Occurrences) {
     size_t Dummy = 0;
     SuffixTreeNode *N = findString(QueryString, Dummy, Root);
 
     if (!N || !N->IsInTree)
-      return;
+      return false;
 
     // If this is an internal node, occurrences are the number of leaf children
     // of the node.
@@ -657,12 +684,12 @@ public:
     if (N->isLeaf())
       Occurrences.push_back(N->SuffixIdx);
 
-    prune(N, QueryString.size());
+    return prune(N, QueryString.size());
   }
 
   /// Construct a suffix tree from a sequence of unsigned integers.
-  SuffixTree(const std::vector<unsigned> &Str_) :
-  Str(Str_)
+  SuffixTree(const std::vector<unsigned> &Str_, const unsigned &Overhead_) :
+  Str(Str_), Overhead(Overhead_)
   {
     Root = insertNode(nullptr, EmptyIdx, EmptyIdx, 0, false);
     Root->IsInTree = true;
@@ -688,7 +715,7 @@ public:
     // Set the suffix indices of each leaf.
     size_t LabelHeight = 0;
     assert(Root && "Root node can't be nullptr!");
-    setSuffixIndices(*Root, LabelHeight);
+    setSuffixIndices(Root, LabelHeight);
   }
 };
 
@@ -714,12 +741,15 @@ struct Candidate {
       : StartIdx(StartIdx_), Len(Len_), FunctionIdx(FunctionIdx_)
       {}
 
+  Candidate(){}
+
   /// \brief Used to ensure that \p Candidates are outlined in an order that
   /// preserves the start and end indices of other \p Candidates.
   bool operator<(const Candidate &rhs) const {
     return StartIdx > rhs.StartIdx;
   }
 };
+
 
 /// \brief Stores created outlined functions and the information needed to
 /// construct them.
@@ -760,6 +790,8 @@ struct OutlinedFunction {
 /// function.
 struct MachineOutliner : public ModulePass {
   static char ID;
+
+  unsigned Overhead = 2;
 
   /// \brief Maps instructions to integers. Two instructions have the same
   /// integer if and only if they are identical. Instructions that are
@@ -921,6 +953,7 @@ void MachineOutliner::buildCandidateList(
     SuffixTree &ST) {
 
   std::vector<unsigned> CandidateSequence;
+  unsigned MaxCandidateLen = 0;
 
   for (ST.bestRepeatedSubstring(CandidateSequence);
        CandidateSequence.size() > 1;
@@ -934,19 +967,32 @@ void MachineOutliner::buildCandidateList(
     );
 
     std::vector<size_t> Occurrences;
-    ST.findOccurrencesAndPrune(CandidateSequence, Occurrences); 
+    bool GotNonOverlappingCandidate = ST.findOccurrencesAndPrune(CandidateSequence, Occurrences); 
 
     // If a candidate doesn't appear at least twice, we won't save anything.
     if (Occurrences.size() < 2)
       break;
+
+    // If the candidate was overlapping, skip it and move to the next one.
+    if (!GotNonOverlappingCandidate)
+      continue;
+
+    if (CandidateSequence.size() > MaxCandidateLen)
+      MaxCandidateLen = CandidateSequence.size() + 1;
 
     FunctionList.push_back(OutlinedFunction(FunctionList.size(),
                                             Occurrences.size(),
                                             CandidateSequence));
 
     unsigned NotOutlinedInstructions = CandidateSequence.size() * Occurrences.size();
-    unsigned OutlinedInstructions = CandidateSequence.size() + 3 + Occurrences.size();
+    unsigned OutlinedInstructions = CandidateSequence.size() + 1 + Overhead * Occurrences.size();
+    //unsigned OutlinedInstructions = CandidateSequence.size() + 2 + Occurrences.size();
+
     FunctionList.back().Benefit = NotOutlinedInstructions - OutlinedInstructions;
+
+    if (FunctionList.back().Benefit < 1) {
+      errs() << "Unbeneficial function!\n";
+    }
 
     // Save each of the occurrences for the outlining process.
     for (size_t &Occ : Occurrences) {
@@ -966,46 +1012,106 @@ void MachineOutliner::buildCandidateList(
     // allowing us to cut them out without keeping track of an offset.
     std::stable_sort(CandidateList.begin(), CandidateList.end());
 
-    // FIXME: Make this not n^2!
-    // Idea: Union-find data structure for overlapping regions?
-    // Other idea: Put everyone in a priority queue, mark regions as dirty,
-    // skip candidates in dirty regions.
-    // Remove overlapping candidates from the candidate list.
-    // Note: Shorter candidates have >= benefit than longer ones.
-    for (size_t i = 0; i < CandidateList.size(); i++) {
-      Candidate &C1 = CandidateList[i];
+    // Check for overlaps in the range. This is O(n^2) worst case, but we can
+    // alleviate that somewhat by bounding our search space using the start
+    // index of our first candidate and the maximum distance an overlapping
+    // candidate could have from the first candidate. This makes it unlikely
+    // that we'll hit a pathological quadratic case. If we base the number of
+    // comparisons between one candidate and another off of the length of the
+    // maximum candidate then when that length is small, we have fewer comparisons.
+    // If that length is large, then there are fewer candidates in the first place
+    // to compare against. For example, if the length of our string is S, then
+    // the longest possible candidate is length S/2. Then there can only be two
+    // candidates, so we only have one comparison. 
 
-      // If we removed the candidate, skip it.
-      if (!C1.InCandidateList)
+    errs() << "Checking for overlaps.....\n";
+    errs() << "( " << CandidateList.size() << " candidates, " << MaxCandidateLen << " max len)\n";
+    errs() << "(Expected comparisons: ~" << CandidateList.size() * MaxCandidateLen/2 << " worst case: ~" << CandidateList.size() * CandidateList.size() << ")\n";
+
+    for (auto It = CandidateList.begin(), Et = CandidateList.end(); It != Et; It++) {
+      Candidate &C1 = *It;
+
+      // If we removed this candidate, skip it.
+      if (!C1.InCandidateList ||
+          FunctionList[C1.FunctionIdx].OccurrenceCount < 2)
         continue;
-
+        
       size_t C1End = C1.StartIdx + C1.Len - 1;
 
-      for (size_t j = i+1; j < CandidateList.size(); j++) {
-        Candidate &C2 = CandidateList[j];
+      // The minimum start index of any candidate that could overlap with this
+      // one.
+      unsigned FarthestPossibleIdx = 0;
 
-        // If we removed the candidate, skip it.
-        if (!C2.InCandidateList)
+      // Either it's 0, or at most MaxCandidateLen indices away.
+      if (C1.StartIdx > MaxCandidateLen)
+        FarthestPossibleIdx = C1.StartIdx - MaxCandidateLen;
+
+      // Worst case: We compare against every candidate other than C1. (O(n^2))
+      // Average case: We compare with most MaxCandidateLen/2 other candidates.
+      // This is because each candidate has to be at least 2 indices away.
+      //
+      // If MaxCandidateLen is small, say, O(log(#Instructions)), then we have
+      // at worst O(N * log(#Instructions)) candidates to compare against.
+      //
+      // If it's large, then there are far fewer candidates to deal with. For
+      // example, let's say the longest candidate takes up 1/4 of the module.
+      // Since it's a candidate, it has to appear at least twice, so 1/2 of the
+      // module is taken up by that candidate, and 1/2 is free for other
+      // candidates. In the worst case, we have a lot of candidates in that
+      // other half, say they all have length 2. Then, if we say the number of
+      // instructions in the program is I, we have I/4 length 2 candidates in
+      // the program. Now, let's look at the first length 2 candidate.
+      //
+      // The maximum length of a candidate is I/4. We have I/4 candidates in
+      // the section, each with length 2. Because they have length 2, the start
+      // index of the first candidate, say C0 and the second candidate, C1, have
+      // a difference of 2. Therefore, in order to find the first candidate
+      // that's too far away to intersect, we only have to do I/8 comparisons
+      // before the next candidate appears rather than I/4 comparisons; half
+      // of what we would have had to do if we compared everything in the
+      // section. In total, that would be I/8 * I/4 = I^2/32 instructions.
+      for (auto Sit = It+1; Sit != Et; Sit++) {
+        Candidate &C2 = *Sit;
+
+        // Once we hit a candidate that is too far away from the current one,
+        // if one exists, then quit. This happens in at most
+        // O(max(FarthestPossibleIdx/2, #Candidates remaining)) steps for every
+        // candidate. For most candidates, this loop will then be
+        // O(FarthestPossibleIdx).
+        if (C2.StartIdx < FarthestPossibleIdx)
+          break;
+
+        // If we removed the candidate, or C2 wouldn't provide enough functions,
+        // skip it.
+        if (!C2.InCandidateList ||
+            FunctionList[C2.FunctionIdx].OccurrenceCount < 2)
           continue;
 
-        size_t C2End = C2.StartIdx + C2.Len - 1;
+         size_t C2End = C2.StartIdx + C2.Len - 1;
 
-        // If the candidate isn't overlapping, skip it.
         if (C2End < C1.StartIdx && C2.StartIdx < C1.StartIdx)
           continue;
 
         errs() << "Found an overlap to purge.\n";
         errs() << "C1 :[" << C1.StartIdx << ", " << C1End << "]\n";
         errs() << "C2 :[" << C2.StartIdx << ", " << C2End << "]\n";
+        
+
+        // Choose the more beneficial of the two to outline.
+        unsigned B1 = FunctionList[C1.FunctionIdx].Benefit;
+        unsigned B2 = FunctionList[C2.FunctionIdx].Benefit;
+
         FunctionList[C2.FunctionIdx].OccurrenceCount--;
-        if (FunctionList[C2.FunctionIdx].Benefit > C2.Len)
-          FunctionList[C2.FunctionIdx].Benefit -= C2.Len;
+
+        if (FunctionList[C2.FunctionIdx].Benefit > C2.Len - 3) 
+          FunctionList[C2.FunctionIdx].Benefit -= C2.Len - 3;
         else
           FunctionList[C2.FunctionIdx].Benefit = 0;
 
+        C2.InCandidateList = false;
+
         errs() << "Num fns left for C2: " << FunctionList[C2.FunctionIdx].OccurrenceCount << "\n";
         errs() << "C2's benefit: " << FunctionList[C2.FunctionIdx].Benefit << "\n";
-        CandidateList[j].InCandidateList = false;
       }
     }
 }
@@ -1079,53 +1185,21 @@ bool MachineOutliner::outline(Module &M,
   // Replace the candidates with calls to their respective outlined functions.
   for (const Candidate &C : CandidateList) {
 
+    // If the candidate was removed, don't bother.
+    if (!C.InCandidateList)
+      continue;
+
     OutlinedFunction &OF = FunctionList[C.FunctionIdx];
 
-    // Don't outline candidates for functions we decided not to outline.
-    if (OF.OccurrenceCount < 2 || OF.Benefit < 1 || !C.InCandidateList)
+    // If it wouldn't be beneficial to outline, don't outline it.
+    if (OF.OccurrenceCount < 2 || OF.Benefit < 1)
       continue;
 
     MachineBasicBlock *MBB = (*InstrList[C.StartIdx]).getParent();
     MachineBasicBlock::iterator StartIt = InstrList[C.StartIdx];
 
-    // If we're trying to outline from an overlap, we might be out of bounds.
-    // If we are, quit.
-    /*
-    size_t OnePastEndIdx = C.StartIdx + C.Len;
-    size_t Dist = OnePastEndIdx - C.StartIdx;
-    size_t ItEndDist = std::distance(StartIt, MBB->end());
-    bool AlreadyOutlinedFrom = (Dist >= ItEndDist);
-
-    if (AlreadyOutlinedFrom) {
-      errs() << "Onepastidx test failed.\n";
-      FunctionList[C.FunctionIdx].OccurrenceCount--;
-      errs() << "FunctionList[C.FunctionList].OccurrenceCount: " << FunctionList[C.FunctionIdx].OccurrenceCount << "\n";
-      continue;
-    }
-    
-
-    std::vector<unsigned> &Sequence = OF.Sequence;
-
-    auto It = StartIt;
-    for (unsigned U : Sequence) {
-      MachineInstr* MI = IntegerInstructionMap.find(U)->second;
-      if (!MI->isIdenticalTo(*It)) {
-        errs() << "Found an overlap!\n";
-        AlreadyOutlinedFrom = true;
-        break;
-      }
-      It++;
-    }
-
-    if (AlreadyOutlinedFrom) {
-      errs() << "Matching test failed\n";
-      FunctionList[C.FunctionIdx].OccurrenceCount--;
-      errs() << "FunctionList[C.FunctionList].OccurrenceCount: " << FunctionList[C.FunctionIdx].OccurrenceCount << "\n";
-      continue;
-    */
-
     if (!FunctionList[C.FunctionIdx].MF)
-    FunctionList[C.FunctionIdx].MF = createOutlinedFunction(M, OF);
+      FunctionList[C.FunctionIdx].MF = createOutlinedFunction(M, OF);
 
     MachineFunction *MF = FunctionList[C.FunctionIdx].MF;
     const TargetSubtargetInfo *STI = &(MF->getSubtarget());
@@ -1177,9 +1251,15 @@ bool MachineOutliner::runOnModule(Module &M) {
     }
   }
 
+  #define ARMOUTLINER
+  #ifdef ARMOUTLINER
+      Overhead = 3;
+      #undef ARMOUTLINER
+  #endif
+
   // Construct a suffix tree, use it to find candidates, and then outline them.
 
-  SuffixTree ST(UnsignedVec);
+  SuffixTree ST(UnsignedVec, Overhead);
   bool OutlinedSomething = false;
   std::vector<Candidate> CandidateList;
   std::vector<OutlinedFunction> FunctionList;
