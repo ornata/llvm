@@ -55,10 +55,10 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
+#include <functional>
 #include <map>
 #include <sstream>
 #include <vector>
-#include <functional>
 
 #define DEBUG_TYPE "machine-outliner"
 
@@ -66,6 +66,7 @@ using namespace llvm;
 
 STATISTIC(NumOutlined, "Number of candidates outlined");
 STATISTIC(FunctionsCreated, "Number of functions created");
+STATISTIC(NumTailCalls, "Number of tail call cases");
 
 namespace {
 
@@ -175,10 +176,8 @@ struct SuffixTreeNode {
   size_t OccurrenceCount = 0;
 
   SuffixTreeNode(size_t StartIdx_, size_t *EndIdx_, SuffixTreeNode *Link_,
-                 SuffixTreeNode *Parent_) :
-                 StartIdx(StartIdx_), EndIdx(EndIdx_), Link(Link_),
-                 Parent(Parent_) 
-                 {}
+                 SuffixTreeNode *Parent_)
+      : StartIdx(StartIdx_), EndIdx(EndIdx_), Link(Link_), Parent(Parent_) {}
 
   SuffixTreeNode() {}
 
@@ -195,11 +194,8 @@ struct SuffixTreeNode {
   }
 
   /// Returns true if this node is a leaf.
-  bool isLeaf() {
-    return SuffixIdx != EmptyIdx;
-  }
+  bool isLeaf() { return SuffixIdx != EmptyIdx; }
 };
-
 
 /// A data structure for fast substring queries.
 ///
@@ -226,9 +222,15 @@ struct SuffixTreeNode {
 class SuffixTree {
 
 private:
-
   /// Each element is an integer representing an instruction in the module.
   std::vector<unsigned> Str;
+
+  /// Benefit calculation function provided by target.
+  std::function<unsigned(size_t, size_t, bool)> BenefitFunction;
+
+  /// Integer assigned to return instructions.
+  /// Used for tail calls.
+  unsigned ReturnID = 0;
 
   /// Maintains each node in the tree.
   BumpPtrAllocator NodeAllocator;
@@ -253,9 +255,6 @@ private:
 
   /// The end index of each leaf in the tree.
   size_t LeafEndIdx = -1;
-
-  /// The overhead of inserting an outlined function. By default this is 2.
-  unsigned Overhead = 2;
 
   /// \brief Helper struct which keeps track of the next insertion point in
   /// Ukkonen's algorithm.
@@ -315,15 +314,14 @@ private:
     for (auto &ChildPair : CurrentNode->Children) {
       assert(ChildPair.second && "Node had a null child!");
       setSuffixIndices(ChildPair.second,
-                             LabelHeight + ChildPair.second->size());
+                       LabelHeight + ChildPair.second->size());
     }
-
 
     // If the node is a leaf, then we need to assign it a suffix index and also
     // bump its parent's occurrence count.
     if (IsLeaf) {
       CurrentNode->SuffixIdx = Str.size() - LabelHeight;
-      assert(CurrentNode->Parent  && "CurrentNode had no parent!");
+      assert(CurrentNode->Parent && "CurrentNode had no parent!");
       CurrentNode->Parent->OccurrenceCount++;
       LeafVector[CurrentNode->SuffixIdx] = CurrentNode;
     }
@@ -422,7 +420,7 @@ private:
           NeedsLink->Link = SplitNode;
           SplitNode->BackLink = NeedsLink;
         }
-    
+
         NeedsLink = SplitNode;
       }
 
@@ -436,14 +434,13 @@ private:
           Active.Idx = EndIdx - SuffixesToAdd + 1;
         }
       } else {
-          // Start the next phase at the next smallest suffix.
-          Active.Node = Active.Node->Link;
+        // Start the next phase at the next smallest suffix.
+        Active.Node = Active.Node->Link;
       }
+    }
   }
-}
 
 public:
-
   /// \brief Traverses the tree depth-first for the string with the highest
   /// benefit.
   ///
@@ -455,7 +452,7 @@ public:
   /// \param [out] MaxBenefit Benefit of the most beneficial substring.
   /// \param [out] BestStartIdx Start index of the most beneficial substring.
   void findBest(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &BestLen,
-                           size_t &MaxBenefit, size_t &BestStartIdx) {
+                size_t &MaxBenefit, size_t &BestStartIdx) {
     if (!CurrNode.IsInTree)
       return;
 
@@ -464,24 +461,20 @@ public:
     if (!CurrNode.isLeaf()) {
       for (auto &ChildPair : CurrNode.Children) {
         if (ChildPair.second && ChildPair.second->IsInTree)
-          findBest(*ChildPair.second,
-                              CurrLen + ChildPair.second->size(),
-                              BestLen,
-                              MaxBenefit,
-                              BestStartIdx);
+          findBest(*ChildPair.second, CurrLen + ChildPair.second->size(),
+                   BestLen, MaxBenefit, BestStartIdx);
       }
     }
 
     // We hit a leaf. Check if we found a better substring than we had before.
-    else if (CurrNode.isLeaf() &&
-             CurrNode.Parent != Root &&
+    else if (CurrNode.isLeaf() && CurrNode.Parent != Root &&
              CurrNode.Parent->OccurrenceCount > 1) {
 
       size_t StringLen = CurrLen - CurrNode.size(); // Length of parent.
 
-      // The string can't have length 1 and be beneficial because we always
-      // have to replace it with a call.
-      if (StringLen < 4)
+      // For any target, the string must have at least length 2 to be beneficial
+      // to outline. Quit early.
+      if (StringLen < 2)
         return;
 
       size_t Occurrences = CurrNode.Parent->OccurrenceCount;
@@ -490,13 +483,11 @@ public:
       if (Occurrences < 2)
         return;
 
-      // Number of instructions we would have by outlining this sequence.
-      //size_t OutlinedInstructions = StringLen + Overhead + Occurrences;
-      size_t OutlinedInstructions = StringLen + 1 + Overhead * Occurrences;
-      size_t NotOutlinedInstructions = StringLen * Occurrences;
-      size_t Benefit = 0;
-      if (OutlinedInstructions < NotOutlinedInstructions)
-        Benefit = NotOutlinedInstructions - OutlinedInstructions;
+      // Check if the last instruction in the sequence is a return.
+      bool CanBeTailCall =
+          (Str[CurrNode.SuffixIdx + StringLen - 1] == ReturnID);
+
+      unsigned Benefit = BenefitFunction(StringLen, Occurrences, CanBeTailCall);
 
       // We didn't save anything or do better, so give up.
       // Compare benefit against the number of instructions added in the
@@ -530,11 +521,11 @@ public:
   /// if it does not exist.
   void bestRepeatedSubstring(std::vector<unsigned> &Best) {
     Best.clear();
-    size_t Length = 0; // Becomes the length of the best substring.
-    size_t Benefit = 0; // Becomes the benefit of the best substring.
+    size_t Length = 0;   // Becomes the length of the best substring.
+    size_t Benefit = 0;  // Becomes the benefit of the best substring.
     size_t StartIdx = 0; // Becomes the start index of the best substring.
     findBest(*Root, 0, Length, Benefit, StartIdx);
-    
+
     for (size_t Idx = 0; Idx < Length; Idx++)
       Best.push_back(Str[Idx + StartIdx]);
   }
@@ -549,9 +540,8 @@ public:
   /// \returns A \p SuffixTreeNode that \p QueryString appears in if such a
   /// node exists, and \p nullptr otherwise.
   SuffixTreeNode *findString(const std::vector<unsigned> &QueryString,
-                             size_t &CurrIdx,
-                             SuffixTreeNode *CurrNode) {
-    
+                             size_t &CurrIdx, SuffixTreeNode *CurrNode) {
+
     // The search ended at a nonexistent or pruned node. Quit.
     if (!CurrNode || !CurrNode->IsInTree)
       return nullptr;
@@ -614,7 +604,7 @@ public:
     // Remove each suffix we have to prune from the tree.
     unsigned Offset = 1;
     for (unsigned CurrentSuffix = 1; CurrentSuffix < Len; CurrentSuffix++) {
-      for (unsigned I: IndicesToPrune) {
+      for (unsigned I : IndicesToPrune) {
         if (I + Offset < LeafVector.size()) {
 
           if (LeafVector[I + Offset]->IsInTree) {
@@ -636,19 +626,19 @@ public:
     // We know we can never outline anything which starts one index back from
     // the indices we want to outline. This is because our minimum outlining
     // length is always 2.
-    for (unsigned I: IndicesToPrune) {
+    for (unsigned I : IndicesToPrune) {
       if (I > 0) {
         SuffixTreeNode *Parent = LeafVector[I - 1]->Parent;
 
         if (LeafVector[I - 1]->IsInTree) {
-            LeafVector[I - 1]->IsInTree = false;
-          } else {
-            NoOverlap = false;
-          }
+          LeafVector[I - 1]->IsInTree = false;
+        } else {
+          NoOverlap = false;
+        }
 
         if (Parent->OccurrenceCount > 0) {
-            Parent->OccurrenceCount--;
-            Parent->IsInTree = (Parent->OccurrenceCount > 1);
+          Parent->OccurrenceCount--;
+          Parent->IsInTree = (Parent->OccurrenceCount > 1);
         }
       }
     }
@@ -688,9 +678,10 @@ public:
   }
 
   /// Construct a suffix tree from a sequence of unsigned integers.
-  SuffixTree(const std::vector<unsigned> &Str_, const unsigned &Overhead_) :
-  Str(Str_), Overhead(Overhead_)
-  {
+  SuffixTree(
+      const std::vector<unsigned> &Str_,
+      const std::function<unsigned(size_t, size_t, bool)> BenefitFunction_)
+      : Str(Str_), BenefitFunction(BenefitFunction_) {
     Root = insertNode(nullptr, EmptyIdx, EmptyIdx, 0, false);
     Root->IsInTree = true;
     Active.Node = Root;
@@ -719,7 +710,6 @@ public:
   }
 };
 
-
 /// \brief An individual sequence of instructions to be replaced with a call to
 /// an outlined function.
 struct Candidate {
@@ -738,18 +728,14 @@ struct Candidate {
   size_t FunctionIdx;
 
   Candidate(size_t StartIdx_, size_t Len_, size_t FunctionIdx_)
-      : StartIdx(StartIdx_), Len(Len_), FunctionIdx(FunctionIdx_)
-      {}
+      : StartIdx(StartIdx_), Len(Len_), FunctionIdx(FunctionIdx_) {}
 
-  Candidate(){}
+  Candidate() {}
 
   /// \brief Used to ensure that \p Candidates are outlined in an order that
   /// preserves the start and end indices of other \p Candidates.
-  bool operator<(const Candidate &rhs) const {
-    return StartIdx > rhs.StartIdx;
-  }
+  bool operator<(const Candidate &rhs) const { return StartIdx > rhs.StartIdx; }
 };
-
 
 /// \brief Stores created outlined functions and the information needed to
 /// construct them.
@@ -765,17 +751,20 @@ struct OutlinedFunction {
   /// The number of times that this function has appeared.
   size_t OccurrenceCount = 0;
 
-  // The number of instructions this function would save.
-  unsigned Benefit = 0;
-
   /// \brief The sequence of integers corresponding to the instructions in this
   /// function.
   std::vector<unsigned> Sequence;
 
+  // The number of instructions this function would save.
+  unsigned Benefit = 0;
+
+  bool IsTailCall = false;
+
   OutlinedFunction(size_t Name_, size_t OccurrenceCount_,
-                   const std::vector<unsigned> &Sequence_)
-      : Name(Name_), OccurrenceCount(OccurrenceCount_), Sequence(Sequence_)
-      {}
+                   const std::vector<unsigned> &Sequence_,
+                   const unsigned &Benefit_)
+      : Name(Name_), OccurrenceCount(OccurrenceCount_), Sequence(Sequence_),
+        Benefit(Benefit_) {}
 };
 } // Anonymous namespace.
 
@@ -789,9 +778,10 @@ struct OutlinedFunction {
 /// \p MachineFunction and each instance is then replaced with a call to that
 /// function.
 struct MachineOutliner : public ModulePass {
+
   static char ID;
 
-  unsigned Overhead = 2;
+  std::function<unsigned(size_t, size_t, bool)> BenefitFunction;
 
   /// \brief Maps instructions to integers. Two instructions have the same
   /// integer if and only if they are identical. Instructions that are
@@ -809,7 +799,8 @@ struct MachineOutliner : public ModulePass {
   unsigned IllegalInstrNumber = -3;
 
   /// The last value assigned to an instruction we can outline.
-  unsigned LegalInstrNumber = 0;
+  /// 0 is reserved for returns.
+  unsigned LegalInstrNumber = 1;
 
   /// The ID of the last function created.
   size_t CurrentFunctionID;
@@ -844,10 +835,10 @@ struct MachineOutliner : public ModulePass {
   /// \param TRI TargetRegisterInfo for the module.
   /// \param TII TargetInstrInfo for the module.
   void convertToUnsignedVec(std::vector<unsigned> &UnsignedVec,
-                        std::vector<MachineBasicBlock::iterator> &InstrList,
-                        MachineBasicBlock &BB,
-                        const TargetRegisterInfo &TRI,
-                        const TargetInstrInfo &TII);
+                            std::vector<MachineBasicBlock::iterator> &InstrList,
+                            MachineBasicBlock &BB,
+                            const TargetRegisterInfo &TRI,
+                            const TargetInstrInfo &TII, bool IsLastBasicBlock);
 
   /// \brief Replace the sequences of instructions represented by the
   /// \p Candidates in \p CandidateList with calls to \p MachineFunctions
@@ -896,19 +887,34 @@ ModulePass *createOutlinerPass() { return new MachineOutliner(); }
 INITIALIZE_PASS(MachineOutliner, "machine-outliner",
                 "Machine Function Outliner", false, false)
 
-void MachineOutliner::convertToUnsignedVec(std::vector<unsigned> &UnsignedVec,
-                            std::vector<MachineBasicBlock::iterator> &InstrList,
-                            MachineBasicBlock &MBB,
-                            const TargetRegisterInfo &TRI,
-                            const TargetInstrInfo &TII) {
-  for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end();
-       It != Et; It++) {
+void MachineOutliner::convertToUnsignedVec(
+    std::vector<unsigned> &UnsignedVec,
+    std::vector<MachineBasicBlock::iterator> &InstrList, MachineBasicBlock &MBB,
+    const TargetRegisterInfo &TRI, const TargetInstrInfo &TII,
+    bool IsLastBasicBlock) {
+
+  for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end(); It != Et;
+       It++) {
+
+    // First, keep track of where this instruction is in the program.
     InstrList.push_back(It);
-    MachineInstr& MI = *It;
+    MachineInstr &MI = *It;
+
     bool IsSafeToOutline = TII.isLegalToOutline(MI);
-    
-    // If it's not, give it a bad number.
-    if (!IsSafeToOutline) {
+
+    // If we have a return and it's the last instruction in the function, then
+    // we can tail call it.
+    if (IsLastBasicBlock && MI.isReturn() && IsSafeToOutline &&
+        std::next(It, 1) == Et) {
+      UnsignedVec.push_back(0);
+      // FIXME: Do this in RunOnModule.
+      InstructionIntegerMap.insert(std::make_pair(&MI, 0));
+      IntegerInstructionMap.insert(std::make_pair(0, &MI));
+      continue;
+    }
+
+    // If it's unsafe or a return we can't tail call, give it a bad number.
+    if (!IsSafeToOutline || MI.isReturn()) {
       UnsignedVec.push_back(IllegalInstrNumber);
       IllegalInstrNumber--;
       assert(LegalInstrNumber < IllegalInstrNumber &&
@@ -922,26 +928,27 @@ void MachineOutliner::convertToUnsignedVec(std::vector<unsigned> &UnsignedVec,
     // It's safe to outline, so we should give it a legal integer. If it's in
     // the map, then give it the previously assigned integer. Otherwise, give
     // it the next available one.
-    auto I = InstructionIntegerMap.insert(
-        std::make_pair(&MI, LegalInstrNumber));
+    auto I =
+        InstructionIntegerMap.insert(std::make_pair(&MI, LegalInstrNumber));
 
     // There was an insertion.
     if (I.second) {
       LegalInstrNumber++;
-      IntegerInstructionMap.insert(std::make_pair(I.first->second, &MI)); 
+      IntegerInstructionMap.insert(std::make_pair(I.first->second, &MI));
     }
 
     unsigned MINumber = I.first->second;
     UnsignedVec.push_back(MINumber);
     CurrentFunctionID++;
     assert(LegalInstrNumber < IllegalInstrNumber &&
-           LegalInstrNumber != (unsigned)-3 &&
-           "Instruction mapping overflow!");
+           LegalInstrNumber != (unsigned)-3 && "Instruction mapping overflow!");
     assert(LegalInstrNumber != (unsigned)-1 &&
            LegalInstrNumber != (unsigned)-2 &&
            "Str cannot be DenseMap tombstone or empty key!");
   }
 
+  // After we're done every insertion, uniquely terminate this part of the
+  // "string".
   InstrList.push_back(nullptr);
   UnsignedVec.push_back(IllegalInstrNumber);
   IllegalInstrNumber--;
@@ -949,8 +956,7 @@ void MachineOutliner::convertToUnsignedVec(std::vector<unsigned> &UnsignedVec,
 
 void MachineOutliner::buildCandidateList(
     std::vector<Candidate> &CandidateList,
-    std::vector<OutlinedFunction> &FunctionList,
-    SuffixTree &ST) {
+    std::vector<OutlinedFunction> &FunctionList, SuffixTree &ST) {
 
   std::vector<unsigned> CandidateSequence;
   unsigned MaxCandidateLen = 0;
@@ -959,15 +965,15 @@ void MachineOutliner::buildCandidateList(
        CandidateSequence.size() > 1;
        ST.bestRepeatedSubstring(CandidateSequence)) {
 
-    DEBUG(
-      dbgs() << "CandidateSequence: \n";
-      for (const unsigned &U : CandidateSequence)
-        IntegerInstructionMap.find(U)->second->dump();
-      dbgs() << "\n";
-    );
+    DEBUG(dbgs() << "CandidateSequence: \n";
+          for (const unsigned &U
+               : CandidateSequence) IntegerInstructionMap.find(U)
+              ->second->dump();
+          dbgs() << "\n";);
 
     std::vector<size_t> Occurrences;
-    bool GotNonOverlappingCandidate = ST.findOccurrencesAndPrune(CandidateSequence, Occurrences); 
+    bool GotNonOverlappingCandidate =
+        ST.findOccurrencesAndPrune(CandidateSequence, Occurrences);
 
     // If a candidate doesn't appear at least twice, we won't save anything.
     if (Occurrences.size() < 2)
@@ -980,26 +986,23 @@ void MachineOutliner::buildCandidateList(
     if (CandidateSequence.size() > MaxCandidateLen)
       MaxCandidateLen = CandidateSequence.size() + 1;
 
-    FunctionList.push_back(OutlinedFunction(FunctionList.size(),
-                                            Occurrences.size(),
-                                            CandidateSequence));
+    FunctionList.push_back(OutlinedFunction(
+        FunctionList.size(), Occurrences.size(), CandidateSequence,
+        BenefitFunction(CandidateSequence.size(), Occurrences.size(),
+                        CandidateSequence.back() == 0)));
 
-    unsigned NotOutlinedInstructions = CandidateSequence.size() * Occurrences.size();
-    unsigned OutlinedInstructions = CandidateSequence.size() + 1 + Overhead * Occurrences.size();
-    //unsigned OutlinedInstructions = CandidateSequence.size() + 2 + Occurrences.size();
+    FunctionList.back().IsTailCall = (CandidateSequence.back() == 0);
 
-    FunctionList.back().Benefit = NotOutlinedInstructions - OutlinedInstructions;
-
-    if (FunctionList.back().Benefit < 1) {
-      errs() << "Unbeneficial function!\n";
-    }
+    // Make sure that whatever we're putting in the list is beneficial.
+    assert(FunctionList.back().Benefit >= 1 &&
+           "Unbeneficial function candidate!");
 
     // Save each of the occurrences for the outlining process.
     for (size_t &Occ : Occurrences) {
       CandidateList.push_back(Candidate(
-          Occ,                       // Starting idx in that MBB.
-          CandidateSequence.size(),  // Candidate length.
-          FunctionList.size() - 1    // Idx of the corresponding function.
+          Occ,                      // Starting idx in that MBB.
+          CandidateSequence.size(), // Candidate length.
+          FunctionList.size() - 1   // Idx of the corresponding function.
           ));
     }
 
@@ -1007,113 +1010,125 @@ void MachineOutliner::buildCandidateList(
     FunctionsCreated++;
   }
 
-    // Sort the candidates in decending order. This will simplify the outlining
-    // process when we have to remove the candidates from the mapping by
-    // allowing us to cut them out without keeping track of an offset.
-    std::stable_sort(CandidateList.begin(), CandidateList.end());
+  // Sort the candidates in decending order. This will simplify the outlining
+  // process when we have to remove the candidates from the mapping by
+  // allowing us to cut them out without keeping track of an offset.
+  std::stable_sort(CandidateList.begin(), CandidateList.end());
 
-    // Check for overlaps in the range. This is O(n^2) worst case, but we can
-    // alleviate that somewhat by bounding our search space using the start
-    // index of our first candidate and the maximum distance an overlapping
-    // candidate could have from the first candidate. This makes it unlikely
-    // that we'll hit a pathological quadratic case. If we base the number of
-    // comparisons between one candidate and another off of the length of the
-    // maximum candidate then when that length is small, we have fewer comparisons.
-    // If that length is large, then there are fewer candidates in the first place
-    // to compare against. For example, if the length of our string is S, then
-    // the longest possible candidate is length S/2. Then there can only be two
-    // candidates, so we only have one comparison. 
+  // Check for overlaps in the range. This is O(n^2) worst case, but we can
+  // alleviate that somewhat by bounding our search space using the start
+  // index of our first candidate and the maximum distance an overlapping
+  // candidate could have from the first candidate. This makes it unlikely
+  // that we'll hit a pathological quadratic case. If we base the number of
+  // comparisons between one candidate and another off of the length of the
+  // maximum candidate then when that length is small, we have fewer
+  // comparisons. If that length is large, then there are fewer candidates in
+  // the first place to compare against. For example, if the length of our
+  // string is S, then the longest possible candidate is length S/2. Then there
+  // can only be two candidates, so we only have one comparison.
 
-    errs() << "Checking for overlaps.....\n";
-    errs() << "( " << CandidateList.size() << " candidates, " << MaxCandidateLen << " max len)\n";
-    errs() << "(Expected comparisons: ~" << CandidateList.size() * MaxCandidateLen/2 << " worst case: ~" << CandidateList.size() * CandidateList.size() << ")\n";
+  dbgs() << "Checking for overlaps in candidate list...........\n";
 
-    for (auto It = CandidateList.begin(), Et = CandidateList.end(); It != Et; It++) {
-      Candidate &C1 = *It;
+  for (auto It = CandidateList.begin(), Et = CandidateList.end(); It != Et;
+       It++) {
+    Candidate &C1 = *It;
 
-      // If we removed this candidate, skip it.
-      if (!C1.InCandidateList ||
-          FunctionList[C1.FunctionIdx].OccurrenceCount < 2)
-        continue;
-        
-      size_t C1End = C1.StartIdx + C1.Len - 1;
+    // If we removed this candidate, skip it.
+    if (!C1.InCandidateList)
+      continue;
 
-      // The minimum start index of any candidate that could overlap with this
-      // one.
-      unsigned FarthestPossibleIdx = 0;
-
-      // Either it's 0, or at most MaxCandidateLen indices away.
-      if (C1.StartIdx > MaxCandidateLen)
-        FarthestPossibleIdx = C1.StartIdx - MaxCandidateLen;
-
-      // Worst case: We compare against every candidate other than C1. (O(n^2))
-      // Average case: We compare with most MaxCandidateLen/2 other candidates.
-      // This is because each candidate has to be at least 2 indices away.
-      //
-      // If MaxCandidateLen is small, say, O(log(#Instructions)), then we have
-      // at worst O(N * log(#Instructions)) candidates to compare against.
-      //
-      // If it's large, then there are far fewer candidates to deal with. For
-      // example, let's say the longest candidate takes up 1/4 of the module.
-      // Since it's a candidate, it has to appear at least twice, so 1/2 of the
-      // module is taken up by that candidate, and 1/2 is free for other
-      // candidates. In the worst case, we have a lot of candidates in that
-      // other half, say they all have length 2. Then, if we say the number of
-      // instructions in the program is I, we have I/4 length 2 candidates in
-      // the program. Now, let's look at the first length 2 candidate.
-      //
-      // The maximum length of a candidate is I/4. We have I/4 candidates in
-      // the section, each with length 2. Because they have length 2, the start
-      // index of the first candidate, say C0 and the second candidate, C1, have
-      // a difference of 2. Therefore, in order to find the first candidate
-      // that's too far away to intersect, we only have to do I/8 comparisons
-      // before the next candidate appears rather than I/4 comparisons; half
-      // of what we would have had to do if we compared everything in the
-      // section. In total, that would be I/8 * I/4 = I^2/32 instructions.
-      for (auto Sit = It+1; Sit != Et; Sit++) {
-        Candidate &C2 = *Sit;
-
-        // Once we hit a candidate that is too far away from the current one,
-        // if one exists, then quit. This happens in at most
-        // O(max(FarthestPossibleIdx/2, #Candidates remaining)) steps for every
-        // candidate. For most candidates, this loop will then be
-        // O(FarthestPossibleIdx).
-        if (C2.StartIdx < FarthestPossibleIdx)
-          break;
-
-        // If we removed the candidate, or C2 wouldn't provide enough functions,
-        // skip it.
-        if (!C2.InCandidateList ||
-            FunctionList[C2.FunctionIdx].OccurrenceCount < 2)
-          continue;
-
-         size_t C2End = C2.StartIdx + C2.Len - 1;
-
-        if (C2End < C1.StartIdx && C2.StartIdx < C1.StartIdx)
-          continue;
-
-        errs() << "Found an overlap to purge.\n";
-        errs() << "C1 :[" << C1.StartIdx << ", " << C1End << "]\n";
-        errs() << "C2 :[" << C2.StartIdx << ", " << C2End << "]\n";
-        
-
-        // Choose the more beneficial of the two to outline.
-        unsigned B1 = FunctionList[C1.FunctionIdx].Benefit;
-        unsigned B2 = FunctionList[C2.FunctionIdx].Benefit;
-
-        FunctionList[C2.FunctionIdx].OccurrenceCount--;
-
-        if (FunctionList[C2.FunctionIdx].Benefit > C2.Len - 3) 
-          FunctionList[C2.FunctionIdx].Benefit -= C2.Len - 3;
-        else
-          FunctionList[C2.FunctionIdx].Benefit = 0;
-
-        C2.InCandidateList = false;
-
-        errs() << "Num fns left for C2: " << FunctionList[C2.FunctionIdx].OccurrenceCount << "\n";
-        errs() << "C2's benefit: " << FunctionList[C2.FunctionIdx].Benefit << "\n";
-      }
+    // If the candidate's function isn't good to outline anymore, then
+    // remove the candidate and skip it.
+    if (FunctionList[C1.FunctionIdx].OccurrenceCount < 2 ||
+        FunctionList[C1.FunctionIdx].Benefit < 1) {
+      C1.InCandidateList = false;
+      continue;
     }
+
+    // size_t C1End = C1.StartIdx + C1.Len - 1;
+
+    // The minimum start index of any candidate that could overlap with this
+    // one.
+    unsigned FarthestPossibleIdx = 0;
+
+    // Either it's 0, or at most MaxCandidateLen indices away.
+    if (C1.StartIdx > MaxCandidateLen)
+      FarthestPossibleIdx = C1.StartIdx - MaxCandidateLen;
+
+    // Worst case: We compare against every candidate other than C1. (O(n^2))
+    // Average case: We compare with most MaxCandidateLen/2 other candidates.
+    // This is because each candidate has to be at least 2 indices away.
+    //
+    // If MaxCandidateLen is small, say, O(log(#Instructions)), then we have
+    // at worst O(N * log(#Instructions)) candidates to compare against.
+    //
+    // If it's large, then there are far fewer candidates to deal with. For
+    // example, let's say the longest candidate takes up 1/4 of the module.
+    // Since it's a candidate, it has to appear at least twice, so 1/2 of the
+    // module is taken up by that candidate, and 1/2 is free for other
+    // candidates. In the worst case, we have a lot of candidates in that
+    // other half, say they all have length 2. Then, if we say the number of
+    // instructions in the program is I, we have I/4 length 2 candidates in
+    // the program. Now, let's look at the first length 2 candidate.
+    //
+    // The maximum length of a candidate is I/4. We have I/4 candidates in
+    // the section, each with length 2. Because they have length 2, the start
+    // index of the first candidate, say C0 and the second candidate, C1, have
+    // a difference of 2. Therefore, in order to find the first candidate
+    // that's too far away to intersect, we only have to do I/8 comparisons
+    // before the next candidate appears rather than I/4 comparisons; half
+    // of what we would have had to do if we compared everything in the
+    // section. In total, that would be I/8 * I/4 = I^2/32 instructions.
+    for (auto Sit = It + 1; Sit != Et; Sit++) {
+      Candidate &C2 = *Sit;
+
+      // Once we hit a candidate that is too far away from the current one,
+      // if one exists, then quit. This happens in at most
+      // O(max(FarthestPossibleIdx/2, #Candidates remaining)) steps for every
+      // candidate. For most candidates, this loop will then be
+      // O(FarthestPossibleIdx).
+      if (C2.StartIdx < FarthestPossibleIdx)
+        break;
+
+      // If we removed the candidate, or C2 wouldn't provide enough functions,
+      // skip it.
+      if (!C2.InCandidateList)
+        continue;
+
+      // If the candidate's function isn't good to outline anymore, then
+      // remove the candidate and skip it.
+      if (FunctionList[C2.FunctionIdx].OccurrenceCount < 2 ||
+          FunctionList[C2.FunctionIdx].Benefit < 1) {
+        C2.InCandidateList = false;
+        continue;
+      }
+
+      size_t C2End = C2.StartIdx + C2.Len - 1;
+
+      if (C2End < C1.StartIdx && C2.StartIdx < C1.StartIdx)
+        continue;
+
+      /*
+      dbgs() << "Found an overlap to purge.\n";
+      dbgs() << "C1 :[" << C1.StartIdx << ", " << C1End << "]\n";
+      dbgs() << "C2 :[" << C2.StartIdx << ", " << C2End << "]\n";
+      */
+      FunctionList[C2.FunctionIdx].OccurrenceCount--;
+
+      // Update the function's benefit.
+      FunctionList[C2.FunctionIdx].Benefit =
+          BenefitFunction(FunctionList[C2.FunctionIdx].Sequence.size(),
+                          FunctionList[C2.FunctionIdx].OccurrenceCount,
+                          FunctionList[C2.FunctionIdx].IsTailCall);
+
+      C2.InCandidateList = false;
+      /*
+      dbgs() << "Num fns left for C2: " <<
+      FunctionList[C2.FunctionIdx].OccurrenceCount << "\n"; dbgs() << "C2's
+      benefit: " << FunctionList[C2.FunctionIdx].Benefit << "\n";
+      */
+    }
+  }
 }
 
 MachineFunction *
@@ -1127,7 +1142,6 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   size_t HashedModuleName = std::hash<std::string>{}(M.getName().str());
   NameStream << "OUTLINED_FUNCTION" << HashedModuleName << "_" << OF.Name;
   std::string *Name = new std::string(NameStream.str());
-  errs() << "***** Created " << *Name << "\n";
 
   // Create the function using an IR-level function.
   LLVMContext &C = M.getContext();
@@ -1153,33 +1167,36 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
   // Insert the new function into the program.
   MF.insert(MF.begin(), MBB);
 
-  TII->insertOutlinerPrologue(*MBB, MF);
+  TII->insertOutlinerPrologue(*MBB, MF, OF.IsTailCall);
 
   // Copy over the instructions for the function using the integer mappings in
   // its sequence.
   for (unsigned Str : OF.Sequence) {
-    MachineInstr *NewMI = MF.CloneMachineInstr(
-                              IntegerInstructionMap.find(Str)->second
-                          );
+    MachineInstr *NewMI =
+        MF.CloneMachineInstr(IntegerInstructionMap.find(Str)->second);
     NewMI->dropMemRefs();
     MBB->insert(MBB->end(), NewMI);
   }
 
-  TII->insertOutlinerEpilogue(*MBB, MF);
+  TII->insertOutlinerEpilogue(*MBB, MF, OF.IsTailCall);
 
-  DEBUG(
-        dbgs() << "New function: \n"; dbgs() << *Name << ":\n";
-        for (MachineBasicBlock &MBB : MF)
-          MBB.dump();
-        );
+  errs() << "Created " << *Name << " as a ";
+  if (OF.IsTailCall)
+    errs() << "tail call\n";
+  else
+    errs() << "normal function\n";
+
+  DEBUG(dbgs() << "New function: \n"; dbgs() << *Name << ":\n";
+        for (MachineBasicBlock &MBB
+             : MF) MBB.dump(););
 
   return &MF;
 }
 
-bool MachineOutliner::outline(Module &M,
-                      const std::vector<MachineBasicBlock::iterator> &InstrList,
-                      const std::vector<Candidate> &CandidateList,
-                      std::vector<OutlinedFunction> &FunctionList) {
+bool MachineOutliner::outline(
+    Module &M, const std::vector<MachineBasicBlock::iterator> &InstrList,
+    const std::vector<Candidate> &CandidateList,
+    std::vector<OutlinedFunction> &FunctionList) {
   bool OutlinedSomething = false;
 
   // Replace the candidates with calls to their respective outlined functions.
@@ -1204,14 +1221,20 @@ bool MachineOutliner::outline(Module &M,
     MachineFunction *MF = FunctionList[C.FunctionIdx].MF;
     const TargetSubtargetInfo *STI = &(MF->getSubtarget());
     const TargetInstrInfo *TII = STI->getInstrInfo();
+
+    // Erase the old sequence.
     MachineBasicBlock::iterator EndIt = StartIt;
     std::advance(EndIt, C.Len);
-    StartIt = TII->insertOutlinedCall(M, *MBB, StartIt, *MF);
+    StartIt = TII->insertOutlinedCall(M, *MBB, StartIt, *MF, OF.IsTailCall);
     ++StartIt;
     MBB->erase(StartIt, EndIt);
 
     OutlinedSomething = true;
+
+    // Statistics.
     NumOutlined++;
+    if (OF.IsTailCall)
+      NumTailCalls++;
   }
 
   return OutlinedSomething;
@@ -1219,7 +1242,6 @@ bool MachineOutliner::outline(Module &M,
 
 bool MachineOutliner::runOnModule(Module &M) {
   errs() << ".......... Trying to outline from module " << M.getName() << "\n";
-
 
   // Don't outline from a module that doesn't contain any functions.
   if (M.empty())
@@ -1231,6 +1253,11 @@ bool MachineOutliner::runOnModule(Module &M) {
   const TargetRegisterInfo *TRI = STI->getRegisterInfo();
   const TargetInstrInfo *TII = STI->getInstrInfo();
 
+  BenefitFunction = [&TII](size_t SequenceSize, size_t Occurrences,
+                           bool CanBeTailCall) {
+    return TII->outliningBenefit(SequenceSize, Occurrences, CanBeTailCall);
+  };
+
   std::vector<unsigned> UnsignedVec;
   std::vector<MachineBasicBlock::iterator> InstrList;
 
@@ -1238,37 +1265,33 @@ bool MachineOutliner::runOnModule(Module &M) {
     MachineFunction &MF = MMI.getMachineFunction(F);
 
     // Don't outline from unsafe or empty functions.
-    if (F.empty() || !TII->functionIsSafeToOutlineFrom(F))
+    if (F.empty() || !TII->functionIsSafeToOutlineFrom(MF))
       continue;
 
-    for (MachineBasicBlock &MBB : MF) {
+    for (auto It = MF.begin(), Et = MF.end(); It != Et; It++) {
+      MachineBasicBlock &MBB = *It;
 
       // Don't outline from empty MachineBasicBlocks.
       if (MBB.empty())
         continue;
 
-      convertToUnsignedVec(UnsignedVec, InstrList, MBB, *TRI, *TII);
+      convertToUnsignedVec(UnsignedVec, InstrList, MBB, *TRI, *TII,
+                           (std::next(It) == Et));
     }
   }
 
-  #define ARMOUTLINER
-  #ifdef ARMOUTLINER
-      Overhead = 3;
-      #undef ARMOUTLINER
-  #endif
-
   // Construct a suffix tree, use it to find candidates, and then outline them.
 
-  SuffixTree ST(UnsignedVec, Overhead);
+  SuffixTree ST(UnsignedVec, BenefitFunction);
   bool OutlinedSomething = false;
   std::vector<Candidate> CandidateList;
   std::vector<OutlinedFunction> FunctionList;
 
   CurrentFunctionID = InstructionIntegerMap.size();
   buildCandidateList(CandidateList, FunctionList, ST);
-  OutlinedSomething =
-      outline(M, InstrList, CandidateList, FunctionList);
+  OutlinedSomething = outline(M, InstrList, CandidateList, FunctionList);
 
-  if (OutlinedSomething) errs() << "********** Outlined something!\n";
+  if (OutlinedSomething)
+    errs() << "********** Outlined something!\n";
   return OutlinedSomething;
 }
