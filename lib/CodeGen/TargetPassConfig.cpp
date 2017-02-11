@@ -616,10 +616,9 @@ void TargetPassConfig::addMachinePasses() {
   addPostRegAlloc();
 
   // Insert prolog/epilog code.  Eliminate abstract frame index references...
-  /*
   if (getOptLevel() != CodeGenOpt::None)
-    addPass(&ShrinkWrapID);*/
-  
+    addPass(&ShrinkWrapID);
+
   // Prolog/Epilog inserter needs a TargetMachine to instantiate. But only
   // do so if it hasn't been disabled, substituted, or overridden.
   if (!isPassSubstitutedOrOverridden(&PrologEpilogCodeInserterID))

@@ -39,7 +39,7 @@
 /// https://www.cs.helsinki.fi/u/ukkonen/SuffixT1withFigs.pdf
 ///
 //===----------------------------------------------------------------------===//
-
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -228,9 +228,12 @@ private:
   /// Benefit calculation function provided by target.
   std::function<unsigned(size_t, size_t, bool)> BenefitFunction;
 
-  /// Integer assigned to return instructions.
-  /// Used for tail calls.
-  unsigned ReturnID = 0;
+  /// \brief Integers assigned to the final instructions in MachineFunctions
+  /// in the program.
+  ///
+  /// If we find a candidate ending with a ReturnID, then that candidate can
+  /// be tail called.
+  SmallSet<unsigned, 10> ReturnIDs;
 
   /// Maintains each node in the tree.
   BumpPtrAllocator NodeAllocator;
@@ -484,8 +487,7 @@ public:
         return;
 
       // Check if the last instruction in the sequence is a return.
-      bool CanBeTailCall =
-          (Str[CurrNode.SuffixIdx + StringLen - 1] == ReturnID);
+      bool CanBeTailCall = ReturnIDs.count(Str[CurrNode.SuffixIdx + StringLen - 1]);
 
       unsigned Benefit = BenefitFunction(StringLen, Occurrences, CanBeTailCall);
 
@@ -680,8 +682,9 @@ public:
   /// Construct a suffix tree from a sequence of unsigned integers.
   SuffixTree(
       const std::vector<unsigned> &Str_,
-      const std::function<unsigned(size_t, size_t, bool)> BenefitFunction_)
-      : Str(Str_), BenefitFunction(BenefitFunction_) {
+      const std::function<unsigned(size_t, size_t, bool)> &BenefitFunction_,
+      const SmallSet<unsigned, 10> &ReturnIDs_)
+      : Str(Str_), BenefitFunction(BenefitFunction_), ReturnIDs(ReturnIDs_) {
     Root = insertNode(nullptr, EmptyIdx, EmptyIdx, 0, false);
     Root->IsInTree = true;
     Active.Node = Root;
@@ -799,8 +802,7 @@ struct MachineOutliner : public ModulePass {
   unsigned IllegalInstrNumber = -3;
 
   /// The last value assigned to an instruction we can outline.
-  /// 0 is reserved for returns.
-  unsigned LegalInstrNumber = 1;
+  unsigned LegalInstrNumber = 0;
 
   /// The ID of the last function created.
   size_t CurrentFunctionID;
@@ -819,6 +821,9 @@ struct MachineOutliner : public ModulePass {
     initializeMachineOutlinerPass(*PassRegistry::getPassRegistry());
   }
 
+
+  unsigned mapToUnsigned(MachineInstr &MI, std::vector<unsigned> &UnsignedVec, std::vector<MachineBasicBlock::iterator> &InstrList);
+
   /// \brief Transforms a \p MachineBasicBlock into a \p vector of \p unsigneds
   /// and appends it to \p UnsignedVec and \p InstrList.
   ///
@@ -836,9 +841,11 @@ struct MachineOutliner : public ModulePass {
   /// \param TII TargetInstrInfo for the module.
   void convertToUnsignedVec(std::vector<unsigned> &UnsignedVec,
                             std::vector<MachineBasicBlock::iterator> &InstrList,
+                            SmallSet<unsigned, 10> &ReturnIDs,
                             MachineBasicBlock &BB,
                             const TargetRegisterInfo &TRI,
-                            const TargetInstrInfo &TII, bool IsLastBasicBlock);
+                            const TargetInstrInfo &TII,
+                            bool IsLastBasicBlock);
 
   /// \brief Replace the sequences of instructions represented by the
   /// \p Candidates in \p CandidateList with calls to \p MachineFunctions
@@ -871,6 +878,7 @@ struct MachineOutliner : public ModulePass {
   /// \param ST The suffix tree for the program.
   void buildCandidateList(std::vector<Candidate> &CandidateList,
                           std::vector<OutlinedFunction> &FunctionList,
+                          const SmallSet<unsigned, 10> &ReturnIDs,
                           SuffixTree &ST);
 
   /// Construct a suffix tree on the instructions in \p M and outline repeated
@@ -887,34 +895,61 @@ ModulePass *createOutlinerPass() { return new MachineOutliner(); }
 INITIALIZE_PASS(MachineOutliner, "machine-outliner",
                 "Machine Function Outliner", false, false)
 
+
+unsigned MachineOutliner::mapToUnsigned(MachineInstr &MI, std::vector<unsigned> &UnsignedVec, std::vector<MachineBasicBlock::iterator> &InstrList)
+{
+  // Get the integer for this instruction or give it the current
+  // LegalInstrNumber.
+  auto I = InstructionIntegerMap.insert(std::make_pair(&MI, LegalInstrNumber));
+
+  // There was an insertion.
+  if (I.second) {
+    LegalInstrNumber++;
+    IntegerInstructionMap.insert(std::make_pair(I.first->second, &MI));
+  }
+
+  unsigned MINumber = I.first->second;
+  UnsignedVec.push_back(MINumber);
+  CurrentFunctionID++;
+
+  // Make sure we don't overflow or use any integers reserved by the DenseMap.
+  assert(LegalInstrNumber < IllegalInstrNumber &&
+         LegalInstrNumber != (unsigned)-3 && "Instruction mapping overflow.");
+  assert(LegalInstrNumber != (unsigned)-1 &&
+         LegalInstrNumber != (unsigned)-2 &&
+         "Tried to assign DenseMap tombstone or empty key to instruction.");
+
+  return MINumber;
+}
+
 void MachineOutliner::convertToUnsignedVec(
     std::vector<unsigned> &UnsignedVec,
-    std::vector<MachineBasicBlock::iterator> &InstrList, MachineBasicBlock &MBB,
+    std::vector<MachineBasicBlock::iterator> &InstrList,
+    SmallSet<unsigned, 10> &ReturnIDs,
+    MachineBasicBlock &MBB,
     const TargetRegisterInfo &TRI, const TargetInstrInfo &TII,
     bool IsLastBasicBlock) {
 
   for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end(); It != Et;
        It++) {
 
-    // First, keep track of where this instruction is in the program.
+    // Keep track of where this instruction is in the program.
     InstrList.push_back(It);
     MachineInstr &MI = *It;
 
-    bool IsSafeToOutline = TII.isLegalToOutline(MI);
-
     // If we have a return and it's the last instruction in the function, then
-    // we can tail call it.
-    if (IsLastBasicBlock && MI.isReturn() && IsSafeToOutline &&
-        std::next(It, 1) == Et) {
-      UnsignedVec.push_back(0);
-      // FIXME: Do this in RunOnModule.
-      InstructionIntegerMap.insert(std::make_pair(&MI, 0));
-      IntegerInstructionMap.insert(std::make_pair(0, &MI));
+    // we can tail call it. Map it, save the return ID, and move on.
+    if (IsLastBasicBlock && MI.isTerminator() && 
+        std::next(It) == Et) {
+      unsigned MINumber = mapToUnsigned(MI, UnsignedVec, InstrList);
+      ReturnIDs.insert(MINumber);
       continue;
-    }
+    } 
 
-    // If it's unsafe or a return we can't tail call, give it a bad number.
-    if (!IsSafeToOutline || MI.isReturn()) {
+
+    // If it's not legal to outline, then give it an unique integer and move
+    // on. This way it will never appear in a repeated substring.
+    if (!TII.isLegalToOutline(MI)) {
       UnsignedVec.push_back(IllegalInstrNumber);
       IllegalInstrNumber--;
       assert(LegalInstrNumber < IllegalInstrNumber &&
@@ -925,30 +960,16 @@ void MachineOutliner::convertToUnsignedVec(
       continue;
     }
 
-    // It's safe to outline, so we should give it a legal integer. If it's in
-    // the map, then give it the previously assigned integer. Otherwise, give
-    // it the next available one.
-    auto I =
-        InstructionIntegerMap.insert(std::make_pair(&MI, LegalInstrNumber));
+    // It's safe and we're not the last instruction in the last basic block.
+    // Just map it and move on.
+    mapToUnsigned(MI, UnsignedVec, InstrList);    
 
-    // There was an insertion.
-    if (I.second) {
-      LegalInstrNumber++;
-      IntegerInstructionMap.insert(std::make_pair(I.first->second, &MI));
-    }
-
-    unsigned MINumber = I.first->second;
-    UnsignedVec.push_back(MINumber);
-    CurrentFunctionID++;
-    assert(LegalInstrNumber < IllegalInstrNumber &&
-           LegalInstrNumber != (unsigned)-3 && "Instruction mapping overflow!");
-    assert(LegalInstrNumber != (unsigned)-1 &&
-           LegalInstrNumber != (unsigned)-2 &&
-           "Str cannot be DenseMap tombstone or empty key!");
   }
 
   // After we're done every insertion, uniquely terminate this part of the
-  // "string".
+  // "string". This makes sure we won't match across basic block or function
+  // boundaries since the "end" is encoded uniquely and thus appears in no
+  // repeated substring.
   InstrList.push_back(nullptr);
   UnsignedVec.push_back(IllegalInstrNumber);
   IllegalInstrNumber--;
@@ -956,7 +977,9 @@ void MachineOutliner::convertToUnsignedVec(
 
 void MachineOutliner::buildCandidateList(
     std::vector<Candidate> &CandidateList,
-    std::vector<OutlinedFunction> &FunctionList, SuffixTree &ST) {
+    std::vector<OutlinedFunction> &FunctionList,
+    const SmallSet<unsigned, 10> &ReturnIDs,
+    SuffixTree &ST) {
 
   std::vector<unsigned> CandidateSequence;
   unsigned MaxCandidateLen = 0;
@@ -986,16 +1009,16 @@ void MachineOutliner::buildCandidateList(
     if (CandidateSequence.size() > MaxCandidateLen)
       MaxCandidateLen = CandidateSequence.size() + 1;
 
-    FunctionList.push_back(OutlinedFunction(
-        FunctionList.size(), Occurrences.size(), CandidateSequence,
-        BenefitFunction(CandidateSequence.size(), Occurrences.size(),
-                        CandidateSequence.back() == 0)));
-
-    FunctionList.back().IsTailCall = (CandidateSequence.back() == 0);
+    bool IsTailCall = ReturnIDs.count(CandidateSequence.back());
+    unsigned FnBenefit = BenefitFunction(CandidateSequence.size(), Occurrences.size(), IsTailCall);
 
     // Make sure that whatever we're putting in the list is beneficial.
-    assert(FunctionList.back().Benefit >= 1 &&
+    assert(FnBenefit > 0 &&
            "Unbeneficial function candidate!");
+
+    OutlinedFunction OF = OutlinedFunction(FunctionList.size(), Occurrences.size(), CandidateSequence, FnBenefit);
+    OF.IsTailCall = IsTailCall;
+    FunctionList.push_back(OF);
 
     // Save each of the occurrences for the outlining process.
     for (size_t &Occ : Occurrences) {
@@ -1180,11 +1203,14 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF) {
 
   TII->insertOutlinerEpilogue(*MBB, MF, OF.IsTailCall);
 
-  errs() << "Created " << *Name << " as a ";
+
+  DEBUG (
+  dbgs() << "Created " << *Name << " as a ";
   if (OF.IsTailCall)
-    errs() << "tail call\n";
+    dbgs() << "tail call\n";
   else
-    errs() << "normal function\n";
+    dbgs() << "normal function\n";
+  );
 
   DEBUG(dbgs() << "New function: \n"; dbgs() << *Name << ":\n";
         for (MachineBasicBlock &MBB
@@ -1241,7 +1267,7 @@ bool MachineOutliner::outline(
 }
 
 bool MachineOutliner::runOnModule(Module &M) {
-  errs() << ".......... Trying to outline from module " << M.getName() << "\n";
+  dbgs() << ".......... Trying to outline from module " << M.getName() << "\n";
 
   // Don't outline from a module that doesn't contain any functions.
   if (M.empty())
@@ -1260,6 +1286,7 @@ bool MachineOutliner::runOnModule(Module &M) {
 
   std::vector<unsigned> UnsignedVec;
   std::vector<MachineBasicBlock::iterator> InstrList;
+  SmallSet<unsigned, 10> ReturnIDs;
 
   for (Function &F : M) {
     MachineFunction &MF = MMI.getMachineFunction(F);
@@ -1268,30 +1295,37 @@ bool MachineOutliner::runOnModule(Module &M) {
     if (F.empty() || !TII->functionIsSafeToOutlineFrom(MF))
       continue;
 
-    for (auto It = MF.begin(), Et = MF.end(); It != Et; It++) {
+    auto End = std::prev(MF.end());
+
+    for (auto It = MF.begin(), Et = End; It != Et; It++) {
       MachineBasicBlock &MBB = *It;
 
       // Don't outline from empty MachineBasicBlocks.
       if (MBB.empty())
         continue;
 
-      convertToUnsignedVec(UnsignedVec, InstrList, MBB, *TRI, *TII,
-                           (std::next(It) == Et));
+      convertToUnsignedVec(UnsignedVec, InstrList, ReturnIDs, MBB, *TRI, *TII, false);
     }
+
+    // The last basic block in the function is the only one we can possibly
+    // tail call from, so it's the only one we'll accept terminators from.
+    convertToUnsignedVec(UnsignedVec, InstrList, ReturnIDs, *End, *TRI, *TII, true);
   }
 
   // Construct a suffix tree, use it to find candidates, and then outline them.
 
-  SuffixTree ST(UnsignedVec, BenefitFunction);
+  SuffixTree ST(UnsignedVec, BenefitFunction, ReturnIDs);
   bool OutlinedSomething = false;
   std::vector<Candidate> CandidateList;
   std::vector<OutlinedFunction> FunctionList;
 
   CurrentFunctionID = InstructionIntegerMap.size();
-  buildCandidateList(CandidateList, FunctionList, ST);
+  buildCandidateList(CandidateList, FunctionList, ReturnIDs, ST);
   OutlinedSomething = outline(M, InstrList, CandidateList, FunctionList);
 
+  DEBUG ( 
   if (OutlinedSomething)
-    errs() << "********** Outlined something!\n";
+    dbgs() << "********** Outlined something!\n";
+  );
   return OutlinedSomething;
 }

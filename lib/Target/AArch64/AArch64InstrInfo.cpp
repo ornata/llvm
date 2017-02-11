@@ -4439,6 +4439,22 @@ bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
 
 bool AArch64InstrInfo::isLegalToOutline(MachineInstr &MI) const {
 
+  /*MachineFunction *MF = MI.getParent()->getParent();
+  const TargetRegisterInfo *RegInfo = MF->getSubtarget().getRegisterInfo();
+  if (MI.findRegisterDefOperandIdx(AArch64::LR, true, true, RegInfo) != -1) {
+    errs() << MF->getName() << ": LR is dead at this instruction\n";
+    errs() << "Instruction: \n";
+    MI.dump();
+  }
+
+  if (MI.findRegisterDefOperandIdx(AArch64::LR, false, true, RegInfo) != -1) {
+    errs() << MF->getName() << ": LR not dead at this instruction\n";
+    errs() << "Instruction: \n";
+    MI.dump();
+  }
+  */
+
+
   // We can safely outline returns if we're tail calling.
   if (MI.getOpcode() == AArch64::RET)
     return true;
@@ -4491,7 +4507,6 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                           .addReg(AArch64::LR, RegState::Undef);
   MBB.insert(MBB.end(), ret);
 
-  bool PrintName = false;
   // hack: fixup stack stuff
 
   for (MachineInstr &MI : MBB) {
@@ -4501,12 +4516,9 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
          MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP)) &&
         isFixablePostOutline(MI)) {
 
-      auto &StackOffsetOperand = MI.getOperand(MI.getNumOperands() - 1);
+      auto &StackOffsetOperand = MI.getOperand(MI.getNumExplicitOperands() - 1);
       assert(StackOffsetOperand.isImm() && "Stack offset wasn't immediate!");
       int64_t NewOffset;
-
-      errs() << "Need to fix up instruction\n";
-      MI.dump();
 
       // Fix up the stack.
       switch (MI.getOpcode()) {
@@ -4537,11 +4549,8 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
       case AArch64::STURBBi:
       case AArch64::LDRXpost:
       case AArch64::STRXpre:
-
         NewOffset = StackOffsetOperand.getImm() + 16;
         StackOffsetOperand.setImm(NewOffset);
-        errs() << "Fixup:\n";
-        MI.dump();
         break;
 
       // Instructions with a scale of 2.
@@ -4551,8 +4560,6 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
       case AArch64::STRHHui:
         NewOffset = StackOffsetOperand.getImm() + 8;
         StackOffsetOperand.setImm(NewOffset);
-        errs() << "Fixup:\n";
-        MI.dump();
         break;
 
       // Instructions with a scale of 4.
@@ -4571,8 +4578,6 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
       case AArch64::STRSui:
         NewOffset = StackOffsetOperand.getImm() + 4;
         StackOffsetOperand.setImm(NewOffset);
-        errs() << "Fixup:\n";
-        MI.dump();
         break;
 
       // Instructions with a scale of 8.
@@ -4590,8 +4595,6 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
       case AArch64::STRDui:
         NewOffset = StackOffsetOperand.getImm() + 2;
         StackOffsetOperand.setImm(NewOffset);
-        errs() << "Fixup:\n";
-        MI.dump();
         break;
 
       // Fixups for instructions with a scale of 16.
@@ -4603,17 +4606,12 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
       case AArch64::STRQui:
         NewOffset = StackOffsetOperand.getImm() + 1;
         StackOffsetOperand.setImm(NewOffset);
-        errs() << "Fixup:\n";
-        MI.dump();
         break;
       default:
         break;
       }
     }
   }
-
-  if (PrintName)
-    errs() << "Contained case we want to handle: " << MF.getName() << "\n";
 }
 
 void AArch64InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,
