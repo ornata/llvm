@@ -1503,9 +1503,6 @@ private:
   unsigned ReturnOpcode;
 
 public:
-  /// \brief Return whether or not it's possible to modify an illegal
-  /// instruction post-outlining.
-  virtual bool isFixablePostOutline(MachineInstr &MI) const { return false; }
 
   /// \brief Return how many instructions would be saved by outlining a
   /// sequence containing \p SequenceSize instructions that appears

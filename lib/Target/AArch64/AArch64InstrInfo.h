@@ -254,7 +254,7 @@ private:
   bool substituteCmpToZero(MachineInstr &CmpInstr, unsigned SrcReg,
                            const MachineRegisterInfo *MRI) const;
 
-  bool isFixablePostOutline(MachineInstr &MI) const override;
+  int fixupPostOutline(MachineInstr &MI) const;
   unsigned outliningBenefit(size_t SequenceSize, size_t Occurrences,
                             bool CanBeTailCall) const override;
   bool functionIsSafeToOutlineFrom(MachineFunction &MF) const override;

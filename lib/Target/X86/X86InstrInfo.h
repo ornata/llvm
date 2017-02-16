@@ -597,13 +597,15 @@ private:
                                      unsigned &SrcOpIdx2) const;
 
 public:
-  bool isFixablePostOutline(MachineInstr &MI) const override;
+
   unsigned outliningBenefit(size_t SequenceSize, size_t Occurrences,
                             bool CanBeTailCall) const override;
 
   bool functionIsSafeToOutlineFrom(MachineFunction &MF) const override;
 
   bool isLegalToOutline(MachineInstr &MI) const override;
+
+  bool isFixablePostOutline(MachineInstr &MI) const;
 
   void insertOutlinerEpilogue(MachineBasicBlock &MBB, MachineFunction &MF,
                               bool IsTailCall) const override;

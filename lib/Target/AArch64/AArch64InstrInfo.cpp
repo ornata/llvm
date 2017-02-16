@@ -4322,7 +4322,13 @@ bool AArch64InstrInfo::functionIsSafeToOutlineFrom(MachineFunction &MF) const {
   return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
 }
 
-bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
+int AArch64InstrInfo::fixupPostOutline(MachineInstr &MI) const {
+
+  auto &StackOffsetOperand = MI.getOperand(MI.getNumExplicitOperands() - 1);
+
+  // Don't fixup things if they don't have an offset to fix.
+  if (!StackOffsetOperand.isImm())
+    return -1;
 
   switch (MI.getOpcode()) {
 
@@ -4350,7 +4356,7 @@ bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
   case AArch64::STURSi:
   case AArch64::STURWi:
   case AArch64::STURXi:
-    return true;
+    return StackOffsetOperand.getImm() + 16;
 
   // Scale = 2
   case AArch64::LDRHHui:
@@ -4359,7 +4365,7 @@ bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
   case AArch64::LDRSHXui:
   case AArch64::STRHHui:
   case AArch64::STRHui:
-    return true;
+    return StackOffsetOperand.getImm() + 8;
 
   // Scale = 4
   case AArch64::LDNPSi:
@@ -4375,7 +4381,7 @@ bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
   case AArch64::STPWi:
   case AArch64::STRSui:
   case AArch64::STRWui:
-    return true;
+    return StackOffsetOperand.getImm() + 4;
 
   // Scale = 8
   case AArch64::LDNPDi:
@@ -4390,7 +4396,7 @@ bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
   case AArch64::STPXi:
   case AArch64::STRDui:
   case AArch64::STRXui:
-    return true;
+    return StackOffsetOperand.getImm() + 2;
 
   // Scale = 16
   case AArch64::LDNPQi:
@@ -4399,12 +4405,12 @@ bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
   case AArch64::STNPQi:
   case AArch64::STPQi:
   case AArch64::STRQui:
-    return true;
+    return StackOffsetOperand.getImm() + 1;
   default:
     break;
   }
 
-  return false;
+  return -1;
 }
 
 bool AArch64InstrInfo::isLegalToOutline(MachineInstr &MI) const {
@@ -4439,7 +4445,7 @@ bool AArch64InstrInfo::isLegalToOutline(MachineInstr &MI) const {
       MI.readsRegister(AArch64::SP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
       MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP))
-    return isFixablePostOutline(MI);
+    return (fixupPostOutline(MI) != -1);
 
   return true;
 }
@@ -4462,103 +4468,15 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
     if ((MI.modifiesRegister(AArch64::SP, &RI) ||
          MI.readsRegister(AArch64::SP, &RI) ||
          MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
-         MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP)) &&
-        isFixablePostOutline(MI)) {
+         MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP))) {
 
       auto &StackOffsetOperand = MI.getOperand(MI.getNumExplicitOperands() - 1);
       assert(StackOffsetOperand.isImm() && "Stack offset wasn't immediate!");
-      int64_t NewOffset;
+      int64_t NewOffset = fixupPostOutline(MI);
 
-      // Fix up the stack.
-      switch (MI.getOpcode()) {
+      assert(NewOffset != -1 && "Unfixable instruction shouldn't make it here!");
 
-      // Instructions with a scale of 1.
-      case AArch64::LDURQi:
-      case AArch64::STURQi:
-      case AArch64::LDURXi:
-      case AArch64::LDURDi:
-      case AArch64::STURXi:
-      case AArch64::STURDi:
-      case AArch64::LDURWi:
-      case AArch64::LDURSi:
-      case AArch64::LDURSWi:
-      case AArch64::STURWi:
-      case AArch64::STURSi:
-      case AArch64::LDURHi:
-      case AArch64::LDURHHi:
-      case AArch64::LDURSHXi:
-      case AArch64::LDURSHWi:
-      case AArch64::STURHi:
-      case AArch64::STURHHi:
-      case AArch64::LDURBi:
-      case AArch64::LDURBBi:
-      case AArch64::LDURSBXi:
-      case AArch64::LDURSBWi:
-      case AArch64::STURBi:
-      case AArch64::STURBBi:
-      case AArch64::LDRXpost:
-      case AArch64::STRXpre:
-        NewOffset = StackOffsetOperand.getImm() + 16;
-        StackOffsetOperand.setImm(NewOffset);
-        break;
-
-      // Instructions with a scale of 2.
-      case AArch64::LDRHui:
-      case AArch64::LDRHHui:
-      case AArch64::STRHui:
-      case AArch64::STRHHui:
-        NewOffset = StackOffsetOperand.getImm() + 8;
-        StackOffsetOperand.setImm(NewOffset);
-        break;
-
-      // Instructions with a scale of 4.
-      case AArch64::LDPWi:
-      case AArch64::LDPSi:
-      case AArch64::LDNPWi:
-      case AArch64::LDNPSi:
-      case AArch64::STPWi:
-      case AArch64::STPSi:
-      case AArch64::STNPWi:
-      case AArch64::STNPSi:
-      case AArch64::LDRWui:
-      case AArch64::LDRSui:
-      case AArch64::LDRSWui:
-      case AArch64::STRWui:
-      case AArch64::STRSui:
-        NewOffset = StackOffsetOperand.getImm() + 4;
-        StackOffsetOperand.setImm(NewOffset);
-        break;
-
-      // Instructions with a scale of 8.
-      case AArch64::LDPXi:
-      case AArch64::LDPDi:
-      case AArch64::LDNPXi:
-      case AArch64::LDNPDi:
-      case AArch64::STPXi:
-      case AArch64::STPDi:
-      case AArch64::STNPXi:
-      case AArch64::STNPDi:
-      case AArch64::LDRXui:
-      case AArch64::LDRDui:
-      case AArch64::STRXui:
-      case AArch64::STRDui:
-        NewOffset = StackOffsetOperand.getImm() + 2;
-        StackOffsetOperand.setImm(NewOffset);
-        break;
-
-      // Fixups for instructions with a scale of 16.
-      case AArch64::LDPQi:
-      case AArch64::LDNPQi:
-      case AArch64::STPQi:
-      case AArch64::STNPQi:
-      case AArch64::LDRQui:
-      case AArch64::STRQui:
-        NewOffset = StackOffsetOperand.getImm() + 1;
-        StackOffsetOperand.setImm(NewOffset);
-        break;
-      default:
-        break;
-      }
+      StackOffsetOperand.setImm(NewOffset);
     }
   }
 }
