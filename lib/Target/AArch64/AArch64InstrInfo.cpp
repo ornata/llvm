@@ -4319,36 +4319,6 @@ unsigned AArch64InstrInfo::outliningBenefit(size_t SequenceSize,
 }
 
 bool AArch64InstrInfo::functionIsSafeToOutlineFrom(MachineFunction &MF) const {
-  /*
-  const MachineFrameInfo &MFI = MF.getFrameInfo();
-  const TargetRegisterInfo *RegInfo = MF.getSubtarget().getRegisterInfo();
-
-  if (!MFI.hasCalls())
-    return false;
-
-  // If we haven't saved LR then don't outline.
-  if (!(MF.getTarget().Options.DisableFramePointerElim(MF)) ||
-         MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken() ||
-         MFI.hasStackMap() || MFI.hasPatchPoint() ||
-         RegInfo->needsStackRealignment(MF))
-    return false;
-
-  bool SavedLR = false;
-
-
-  auto CSRegs = RegInfo->getCalleeSavedRegs(&MF);
-  for (unsigned i = 0; CSRegs[i]; ++i) {
-    if (CSRegs[i] == AArch64::LR) {
-      errs() << MF.getName() << " saves LR\n";
-      SavedLR = true;
-      break;
-    }
-  }
-
-  if (!SavedLR)
-    return false;
-  */
-
   return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
 }
 
@@ -4439,26 +4409,6 @@ bool AArch64InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
 
 bool AArch64InstrInfo::isLegalToOutline(MachineInstr &MI) const {
 
-  /*MachineFunction *MF = MI.getParent()->getParent();
-  const TargetRegisterInfo *RegInfo = MF->getSubtarget().getRegisterInfo();
-  if (MI.findRegisterDefOperandIdx(AArch64::LR, true, true, RegInfo) != -1) {
-    errs() << MF->getName() << ": LR is dead at this instruction\n";
-    errs() << "Instruction: \n";
-    MI.dump();
-  }
-
-  if (MI.findRegisterDefOperandIdx(AArch64::LR, false, true, RegInfo) != -1) {
-    errs() << MF->getName() << ": LR not dead at this instruction\n";
-    errs() << "Instruction: \n";
-    MI.dump();
-  }
-  */
-
-
-  // We can safely outline returns if we're tail calling.
-  if (MI.getOpcode() == AArch64::RET)
-    return true;
-
   if (MI.isPosition())
     return false;
 
@@ -4498,8 +4448,7 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                               MachineFunction &MF,
                                               bool IsTailCall) const {
 
-  // If we tail called, then we didn't modify the stack or link register, so
-  // we're safe.
+  // If we tail called, then we didn't modify SP and already have a return.
   if (IsTailCall)
     return;
 
