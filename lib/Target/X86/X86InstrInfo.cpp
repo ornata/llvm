@@ -10826,6 +10826,10 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
 void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                           MachineFunction &MF,
                                           bool IsTailCall) const {
+
+  if (IsTailCall)
+    return;
+
   MachineInstr *retq = BuildMI(MF, DebugLoc(), get(X86::RETQ));
   MBB.insert(MBB.end(), retq);
 
@@ -10873,8 +10877,15 @@ MachineBasicBlock::iterator
 X86InstrInfo::insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator &It,
                                  MachineFunction &MF, bool IsTailCall) const {
-  It = MBB.insert(It,
-                  BuildMI(MF, DebugLoc(), get(X86::CALL64pcrel32))
-                      .addGlobalAddress(M.getNamedValue(MF.getName())));
+
+  if (IsTailCall) {
+    It = MBB.insert(It,
+                    BuildMI(MF, DebugLoc(), get(X86::JMP_1))
+                        .addGlobalAddress(M.getNamedValue(MF.getName())));
+  } else {
+    It = MBB.insert(It,
+                    BuildMI(MF, DebugLoc(), get(X86::CALL64pcrel32))
+                        .addGlobalAddress(M.getNamedValue(MF.getName())));
+  }
   return It;
 }
