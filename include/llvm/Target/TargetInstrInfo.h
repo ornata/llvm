@@ -1529,7 +1529,7 @@ public:
                                       MachineFunction &MF,
                                       bool IsTailCall) const {
     llvm_unreachable(
-        "Target didn't implement TargetInstrInfo::insertOutlinerEpilog!");
+        "Target didn't implement TargetInstrInfo::insertOutlinerEpilogue!");
   }
 
   /// Insert a call to an outlined function into the program.
@@ -1549,7 +1549,7 @@ public:
                                       MachineFunction &MF,
                                       bool IsTailCall) const {
     llvm_unreachable(
-        "Target didn't implement TargetInstrInfo::insertOutlinerProlog!");
+        "Target didn't implement TargetInstrInfo::insertOutlinerPrologue!");
   }
 
   /// Return true if the function can safely be outlined from.
