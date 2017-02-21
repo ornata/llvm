@@ -526,6 +526,12 @@ public:
   // to sign-preserving zero.
   bool useF32FTZ(const MachineFunction &MF) const;
 
+  SDValue getSqrtEstimate(SDValue Operand, SelectionDAG &DAG, int Enabled,
+                          int &ExtraSteps, bool &UseOneConst,
+                          bool Reciprocal) const override;
+
+  unsigned combineRepeatedFPDivisors() const override { return 2; }
+
   bool allowFMA(MachineFunction &MF, CodeGenOpt::Level OptLevel) const;
   bool allowUnsafeFPMath(MachineFunction &MF) const;
 

@@ -32,6 +32,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeExpandISelPseudosPass(Registry);
   initializeExpandPostRAPass(Registry);
   initializeFinalizeMachineBundlesPass(Registry);
+  initializeFEntryInserterPass(Registry);
   initializeFuncletLayoutPass(Registry);
   initializeGCMachineCodeAnalysisPass(Registry);
   initializeGCModuleInfoPass(Registry);
@@ -58,6 +59,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeMachineOutlinerPass(Registry);
   initializeMachinePipelinerPass(Registry);
   initializeMachinePostDominatorTreePass(Registry);
+  initializeMachineRegionInfoPassPass(Registry);
   initializeMachineSchedulerPass(Registry);
   initializeMachineSinkingPass(Registry);
   initializeMachineVerifierPassPass(Registry);

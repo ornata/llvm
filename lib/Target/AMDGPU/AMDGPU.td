@@ -67,10 +67,22 @@ def FeatureUnalignedBufferAccess : SubtargetFeature<"unaligned-buffer-access",
   "Support unaligned global loads and stores"
 >;
 
+def FeatureTrapHandler: SubtargetFeature<"trap-handler",
+  "TrapHandler",
+  "true",
+  "Trap handler support"
+>;
+
 def FeatureUnalignedScratchAccess : SubtargetFeature<"unaligned-scratch-access",
   "UnalignedScratchAccess",
   "true",
   "Support unaligned scratch loads and stores"
+>;
+
+def FeatureApertureRegs : SubtargetFeature<"aperture-regs",
+  "HasApertureRegs",
+  "true",
+  "Has Memory Aperture Base and Size Registers"
 >;
 
 // XNACK is disabled if SH_MEM_CONFIG.ADDRESS_MODE = GPUVM on chips that support
@@ -152,6 +164,12 @@ def FeatureCIInsts : SubtargetFeature<"ci-insts",
   "CIInsts",
   "true",
   "Additional intstructions for CI+"
+>;
+
+def FeatureGFX9Insts : SubtargetFeature<"gfx9-insts",
+  "GFX9Insts",
+  "true",
+  "Additional intstructions for GFX9+"
 >;
 
 def FeatureSMemRealTime : SubtargetFeature<"s-memrealtime",
@@ -305,12 +323,6 @@ def FeatureEnableSIScheduler : SubtargetFeature<"si-scheduler",
   "Enable SI Machine Scheduler"
 >;
 
-def FeatureNoAddr64 : SubtargetFeature<"mubuf-no-addr64",
-  "NoAddr64",
-  "true",
-  "MUBUF instructions have addr64 bit"
->;
-
 // Unless +-flat-for-global is specified, turn on FlatForGlobal for
 // all OS-es on VI and newer hardware to avoid assertion failures due
 // to missing ADDR64 variants of MUBUF instructions.
@@ -320,8 +332,7 @@ def FeatureNoAddr64 : SubtargetFeature<"mubuf-no-addr64",
 def FeatureFlatForGlobal : SubtargetFeature<"flat-for-global",
   "FlatForGlobal",
   "true",
-  "Force to generate flat instruction for global",
-  [FeatureNoAddr64]
+  "Force to generate flat instruction for global"
 >;
 
 // Dummy feature used to disable assembler instructions.
@@ -374,7 +385,16 @@ def FeatureVolcanicIslands : SubtargetFeatureGeneration<"VOLCANIC_ISLANDS",
    FeatureGCN3Encoding, FeatureCIInsts, Feature16BitInsts,
    FeatureSMemRealTime, FeatureVGPRIndexMode, FeatureMovrel,
    FeatureScalarStores, FeatureInv2PiInlineImm, FeatureSDWA,
-   FeatureDPP, FeatureNoAddr64
+   FeatureDPP
+  ]
+>;
+
+def FeatureGFX9 : SubtargetFeatureGeneration<"GFX9",
+  [FeatureFP64, FeatureLocalMemorySize65536,
+   FeatureWavefrontSize64, FeatureFlatAddressSpace, FeatureGCN,
+   FeatureGCN3Encoding, FeatureCIInsts, Feature16BitInsts,
+   FeatureSMemRealTime, FeatureScalarStores, FeatureInv2PiInlineImm,
+   FeatureApertureRegs, FeatureGFX9Insts
   ]
 >;
 
@@ -429,6 +449,9 @@ def FeatureISAVersion8_1_0 : SubtargetFeatureISAVersion <8,1,0,
   [FeatureVolcanicIslands,
    FeatureLDSBankCount16,
    FeatureXNACK]>;
+
+def FeatureISAVersion9_0_0 : SubtargetFeatureISAVersion <9,0,0,[]>;
+def FeatureISAVersion9_0_1 : SubtargetFeatureISAVersion <9,0,1,[]>;
 
 //===----------------------------------------------------------------------===//
 // Debugger related subtarget features.
@@ -535,10 +558,14 @@ def isVI : Predicate <
   "Subtarget->getGeneration() >= AMDGPUSubtarget::VOLCANIC_ISLANDS">,
   AssemblerPredicate<"FeatureGCN3Encoding">;
 
+def isGFX9 : Predicate <
+  "Subtarget->getGeneration() >= AMDGPUSubtarget::GFX9">,
+  AssemblerPredicate<"FeatureGFX9Insts">;
+
+// TODO: Either the name to be changed or we simply use IsCI!
 def isCIVI : Predicate <
-  "Subtarget->getGeneration() == AMDGPUSubtarget::SEA_ISLANDS || "
-  "Subtarget->getGeneration() == AMDGPUSubtarget::VOLCANIC_ISLANDS"
->, AssemblerPredicate<"FeatureCIInsts">;
+  "Subtarget->getGeneration() >= AMDGPUSubtarget::SEA_ISLANDS">,
+  AssemblerPredicate<"FeatureCIInsts">;
 
 def HasFlatAddressSpace : Predicate<"Subtarget->hasFlatAddressSpace()">;
 
@@ -569,5 +596,6 @@ include "Processors.td"
 include "AMDGPUInstrInfo.td"
 include "AMDGPUIntrinsics.td"
 include "AMDGPURegisterInfo.td"
+include "AMDGPURegisterBanks.td"
 include "AMDGPUInstructions.td"
 include "AMDGPUCallingConv.td"

@@ -115,7 +115,7 @@ if(HAVE_LIBPTHREAD)
   set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
   set(THREADS_HAVE_PTHREAD_ARG Off)
   find_package(Threads REQUIRED)
-  set(PTHREAD_LIB ${CMAKE_THREAD_LIBS_INIT})
+  set(LLVM_PTHREAD_LIB ${CMAKE_THREAD_LIBS_INIT})
 endif()
 
 # Don't look for these libraries on Windows. Also don't look for them if we're
@@ -227,6 +227,7 @@ if( HAVE_DLFCN_H )
     list(APPEND CMAKE_REQUIRED_LIBRARIES dl)
   endif()
   check_symbol_exists(dlopen dlfcn.h HAVE_DLOPEN)
+  check_symbol_exists(dladdr dlfcn.h HAVE_DLADDR)
   if( HAVE_LIBDL )
     list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES dl)
   endif()
@@ -489,8 +490,6 @@ if (LLVM_ENABLE_ZLIB )
   endif()
 endif()
 
-set(LLVM_PREFIX ${CMAKE_INSTALL_PREFIX})
-
 if (LLVM_ENABLE_DOXYGEN)
   message(STATUS "Doxygen enabled.")
   find_package(Doxygen REQUIRED)
@@ -547,6 +546,9 @@ set(LLVM_BINUTILS_INCDIR "" CACHE PATH
 	"PATH to binutils/include containing plugin-api.h for gold plugin.")
 
 if(CMAKE_HOST_APPLE AND APPLE)
+  if(NOT CMAKE_XCRUN)
+    find_program(CMAKE_XCRUN NAMES xcrun)
+  endif()
   if(CMAKE_XCRUN)
     execute_process(COMMAND ${CMAKE_XCRUN} -find ld
       OUTPUT_VARIABLE LD64_EXECUTABLE

@@ -439,9 +439,6 @@ public:
                                int64_t Offset2,
                                unsigned NumLoads) const override;
 
-  bool shouldScheduleAdjacent(const MachineInstr &First,
-                              const MachineInstr &Second) const override;
-
   void getNoopForMachoTarget(MCInst &NopInst) const override;
 
   bool

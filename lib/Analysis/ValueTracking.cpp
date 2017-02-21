@@ -20,6 +20,7 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/OptimizationDiagnosticInfo.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/ConstantRange.h"
@@ -76,6 +77,9 @@ struct Query {
   AssumptionCache *AC;
   const Instruction *CxtI;
   const DominatorTree *DT;
+  // Unlike the other analyses, this may be a nullptr because not all clients
+  // provide it currently.
+  OptimizationRemarkEmitter *ORE;
 
   /// Set of assumptions that should be excluded from further queries.
   /// This is because of the potential for mutual recursion to cause
@@ -90,11 +94,12 @@ struct Query {
   unsigned NumExcluded;
 
   Query(const DataLayout &DL, AssumptionCache *AC, const Instruction *CxtI,
-        const DominatorTree *DT)
-      : DL(DL), AC(AC), CxtI(CxtI), DT(DT), NumExcluded(0) {}
+        const DominatorTree *DT, OptimizationRemarkEmitter *ORE = nullptr)
+      : DL(DL), AC(AC), CxtI(CxtI), DT(DT), ORE(ORE), NumExcluded(0) {}
 
   Query(const Query &Q, const Value *NewExcl)
-      : DL(Q.DL), AC(Q.AC), CxtI(Q.CxtI), DT(Q.DT), NumExcluded(Q.NumExcluded) {
+      : DL(Q.DL), AC(Q.AC), CxtI(Q.CxtI), DT(Q.DT), ORE(Q.ORE),
+        NumExcluded(Q.NumExcluded) {
     Excluded = Q.Excluded;
     Excluded[NumExcluded++] = NewExcl;
     assert(NumExcluded <= Excluded.size());
@@ -131,9 +136,10 @@ static void computeKnownBits(const Value *V, APInt &KnownZero, APInt &KnownOne,
 void llvm::computeKnownBits(const Value *V, APInt &KnownZero, APInt &KnownOne,
                             const DataLayout &DL, unsigned Depth,
                             AssumptionCache *AC, const Instruction *CxtI,
-                            const DominatorTree *DT) {
+                            const DominatorTree *DT,
+                            OptimizationRemarkEmitter *ORE) {
   ::computeKnownBits(V, KnownZero, KnownOne, Depth,
-                     Query(DL, AC, safeCxtI(V, CxtI), DT));
+                     Query(DL, AC, safeCxtI(V, CxtI), DT, ORE));
 }
 
 bool llvm::haveNoCommonBitsSet(const Value *LHS, const Value *RHS,
@@ -786,6 +792,24 @@ static void computeKnownBitsFromAssume(const Value *V, APInt &KnownZero,
       else
         KnownZero |=
           APInt::getHighBitsSet(BitWidth, RHSKnownZero.countLeadingOnes());
+    }
+  }
+
+  // If assumptions conflict with each other or previous known bits, then we
+  // have a logical fallacy. It's possible that the assumption is not reachable,
+  // so this isn't a real bug. On the other hand, the program may have undefined
+  // behavior, or we might have a bug in the compiler. We can't assert/crash, so
+  // clear out the known bits, try to warn the user, and hope for the best.
+  if ((KnownZero & KnownOne) != 0) {
+    KnownZero.clearAllBits();
+    KnownOne.clearAllBits();
+
+    if (Q.ORE) {
+      auto *CxtI = const_cast<Instruction *>(Q.CxtI);
+      OptimizationRemarkAnalysis ORA("value-tracking", "BadAssumption", CxtI);
+      Q.ORE->emit(ORA << "Detected conflicting code assumptions. Program may "
+                         "have undefined behavior, or compiler may have "
+                         "internal error.");
     }
   }
 }
@@ -1800,10 +1824,12 @@ static bool rangeMetadataExcludesValue(const MDNode* Ranges, const APInt& Value)
   return true;
 }
 
-/// Return true if the given value is known to be non-zero when defined.
-/// For vectors return true if every element is known to be non-zero when
-/// defined. Supports values with integer or pointer type and vectors of
-/// integers.
+/// Return true if the given value is known to be non-zero when defined. For
+/// vectors, return true if every element is known to be non-zero when
+/// defined. For pointers, if the context instruction and dominator tree are
+/// specified, perform context-sensitive analysis and return true if the
+/// pointer couldn't possibly be null at the specified instruction.
+/// Supports values with integer or pointer type and vectors of integers.
 bool isKnownNonZero(const Value *V, unsigned Depth, const Query &Q) {
   if (auto *C = dyn_cast<Constant>(V)) {
     if (C->isNullValue())
@@ -1846,7 +1872,7 @@ bool isKnownNonZero(const Value *V, unsigned Depth, const Query &Q) {
 
   // Check for pointer simplifications.
   if (V->getType()->isPointerTy()) {
-    if (isKnownNonNull(V))
+    if (isKnownNonNullAt(V, Q.CxtI, Q.DT))
       return true;
     if (const GEPOperator *GEP = dyn_cast<GEPOperator>(V))
       if (isGEPKnownNonNull(GEP, Depth, Q))
@@ -2602,6 +2628,11 @@ static bool cannotBeOrderedLessThanZeroImpl(const Value *V,
                                             const TargetLibraryInfo *TLI,
                                             bool SignBitOnly,
                                             unsigned Depth) {
+  // TODO: This function does not do the right thing when SignBitOnly is true
+  // and we're lowering to a hypothetical IEEE 754-compliant-but-evil platform
+  // which flips the sign bits of NaNs.  See
+  // https://llvm.org/bugs/show_bug.cgi?id=31702.
+
   if (const ConstantFP *CFP = dyn_cast<ConstantFP>(V)) {
     return !CFP->getValueAPF().isNegative() ||
            (!SignBitOnly && CFP->getValueAPF().isZero());
@@ -2678,8 +2709,22 @@ static bool cannotBeOrderedLessThanZeroImpl(const Value *V,
         if (Exponent->getBitWidth() <= 64 && Exponent->getSExtValue() % 2u == 0)
           return true;
       }
+      // TODO: This is not correct.  Given that exp is an integer, here are the
+      // ways that pow can return a negative value:
+      //
+      //   pow(x, exp)    --> negative if exp is odd and x is negative.
+      //   pow(-0, exp)   --> -inf if exp is negative odd.
+      //   pow(-0, exp)   --> -0 if exp is positive odd.
+      //   pow(-inf, exp) --> -0 if exp is negative odd.
+      //   pow(-inf, exp) --> -inf if exp is positive odd.
+      //
+      // Therefore, if !SignBitOnly, we can return true if x >= +0 or x is NaN,
+      // but we must return false if x == -0.  Unfortunately we do not currently
+      // have a way of expressing this constraint.  See details in
+      // https://llvm.org/bugs/show_bug.cgi?id=31702.
       return cannotBeOrderedLessThanZeroImpl(I->getOperand(0), TLI, SignBitOnly,
                                              Depth + 1);
+
     case Intrinsic::fma:
     case Intrinsic::fmuladd:
       // x*x+y is non-negative if y is non-negative.
@@ -3430,6 +3475,16 @@ static bool isKnownNonNullFromDominatingCondition(const Value *V,
     if (NumUsesExplored >= DomConditionsMaxUses)
       break;
     NumUsesExplored++;
+
+    // If the value is used as an argument to a call or invoke, then argument
+    // attributes may provide an answer about null-ness.
+    if (auto CS = ImmutableCallSite(U))
+      if (auto *CalledFunc = CS.getCalledFunction())
+        for (const Argument &Arg : CalledFunc->args())
+          if (CS.getArgOperand(Arg.getArgNo()) == V &&
+              Arg.hasNonNullAttr() && DT->dominates(CS.getInstruction(), CtxI))
+            return true;
+
     // Consider only compare instructions uniquely controlling a branch
     CmpInst::Predicate Pred;
     if (!match(const_cast<User *>(U),
@@ -3755,79 +3810,79 @@ bool llvm::isGuaranteedToExecuteForEveryIteration(const Instruction *I,
 
 bool llvm::propagatesFullPoison(const Instruction *I) {
   switch (I->getOpcode()) {
-    case Instruction::Add:
-    case Instruction::Sub:
-    case Instruction::Xor:
-    case Instruction::Trunc:
-    case Instruction::BitCast:
-    case Instruction::AddrSpaceCast:
-      // These operations all propagate poison unconditionally. Note that poison
-      // is not any particular value, so xor or subtraction of poison with
-      // itself still yields poison, not zero.
-      return true;
+  case Instruction::Add:
+  case Instruction::Sub:
+  case Instruction::Xor:
+  case Instruction::Trunc:
+  case Instruction::BitCast:
+  case Instruction::AddrSpaceCast:
+    // These operations all propagate poison unconditionally. Note that poison
+    // is not any particular value, so xor or subtraction of poison with
+    // itself still yields poison, not zero.
+    return true;
 
-    case Instruction::AShr:
-    case Instruction::SExt:
-      // For these operations, one bit of the input is replicated across
-      // multiple output bits. A replicated poison bit is still poison.
-      return true;
+  case Instruction::AShr:
+  case Instruction::SExt:
+    // For these operations, one bit of the input is replicated across
+    // multiple output bits. A replicated poison bit is still poison.
+    return true;
 
-    case Instruction::Shl: {
-      // Left shift *by* a poison value is poison. The number of
-      // positions to shift is unsigned, so no negative values are
-      // possible there. Left shift by zero places preserves poison. So
-      // it only remains to consider left shift of poison by a positive
-      // number of places.
-      //
-      // A left shift by a positive number of places leaves the lowest order bit
-      // non-poisoned. However, if such a shift has a no-wrap flag, then we can
-      // make the poison operand violate that flag, yielding a fresh full-poison
-      // value.
-      auto *OBO = cast<OverflowingBinaryOperator>(I);
-      return OBO->hasNoUnsignedWrap() || OBO->hasNoSignedWrap();
-    }
+  case Instruction::Shl: {
+    // Left shift *by* a poison value is poison. The number of
+    // positions to shift is unsigned, so no negative values are
+    // possible there. Left shift by zero places preserves poison. So
+    // it only remains to consider left shift of poison by a positive
+    // number of places.
+    //
+    // A left shift by a positive number of places leaves the lowest order bit
+    // non-poisoned. However, if such a shift has a no-wrap flag, then we can
+    // make the poison operand violate that flag, yielding a fresh full-poison
+    // value.
+    auto *OBO = cast<OverflowingBinaryOperator>(I);
+    return OBO->hasNoUnsignedWrap() || OBO->hasNoSignedWrap();
+  }
 
-    case Instruction::Mul: {
-      // A multiplication by zero yields a non-poison zero result, so we need to
-      // rule out zero as an operand. Conservatively, multiplication by a
-      // non-zero constant is not multiplication by zero.
-      //
-      // Multiplication by a non-zero constant can leave some bits
-      // non-poisoned. For example, a multiplication by 2 leaves the lowest
-      // order bit unpoisoned. So we need to consider that.
-      //
-      // Multiplication by 1 preserves poison. If the multiplication has a
-      // no-wrap flag, then we can make the poison operand violate that flag
-      // when multiplied by any integer other than 0 and 1.
-      auto *OBO = cast<OverflowingBinaryOperator>(I);
-      if (OBO->hasNoUnsignedWrap() || OBO->hasNoSignedWrap()) {
-        for (Value *V : OBO->operands()) {
-          if (auto *CI = dyn_cast<ConstantInt>(V)) {
-            // A ConstantInt cannot yield poison, so we can assume that it is
-            // the other operand that is poison.
-            return !CI->isZero();
-          }
+  case Instruction::Mul: {
+    // A multiplication by zero yields a non-poison zero result, so we need to
+    // rule out zero as an operand. Conservatively, multiplication by a
+    // non-zero constant is not multiplication by zero.
+    //
+    // Multiplication by a non-zero constant can leave some bits
+    // non-poisoned. For example, a multiplication by 2 leaves the lowest
+    // order bit unpoisoned. So we need to consider that.
+    //
+    // Multiplication by 1 preserves poison. If the multiplication has a
+    // no-wrap flag, then we can make the poison operand violate that flag
+    // when multiplied by any integer other than 0 and 1.
+    auto *OBO = cast<OverflowingBinaryOperator>(I);
+    if (OBO->hasNoUnsignedWrap() || OBO->hasNoSignedWrap()) {
+      for (Value *V : OBO->operands()) {
+        if (auto *CI = dyn_cast<ConstantInt>(V)) {
+          // A ConstantInt cannot yield poison, so we can assume that it is
+          // the other operand that is poison.
+          return !CI->isZero();
         }
       }
-      return false;
     }
+    return false;
+  }
 
-    case Instruction::ICmp:
-      // Comparing poison with any value yields poison.  This is why, for
-      // instance, x s< (x +nsw 1) can be folded to true.
-      return true;
+  case Instruction::ICmp:
+    // Comparing poison with any value yields poison.  This is why, for
+    // instance, x s< (x +nsw 1) can be folded to true.
+    return true;
 
-    case Instruction::GetElementPtr:
-      // A GEP implicitly represents a sequence of additions, subtractions,
-      // truncations, sign extensions and multiplications. The multiplications
-      // are by the non-zero sizes of some set of types, so we do not have to be
-      // concerned with multiplication by zero. If the GEP is in-bounds, then
-      // these operations are implicitly no-signed-wrap so poison is propagated
-      // by the arguments above for Add, Sub, Trunc, SExt and Mul.
-      return cast<GEPOperator>(I)->isInBounds();
+  case Instruction::GetElementPtr:
+    // A GEP implicitly represents a sequence of additions, subtractions,
+    // truncations, sign extensions and multiplications. The multiplications
+    // are by the non-zero sizes of some set of types, so we do not have to be
+    // concerned with multiplication by zero. If the GEP is in-bounds, then
+    // these operations are implicitly no-signed-wrap so poison is propagated
+    // by the arguments above for Add, Sub, Trunc, SExt and Mul.
+    return cast<GEPOperator>(I)->isInBounds();
 
-    default:
-      return false;
+  default:
+    return false;
   }
 }
 
@@ -4137,58 +4192,64 @@ static SelectPatternResult matchSelectPattern(CmpInst::Predicate Pred,
 
 static Value *lookThroughCast(CmpInst *CmpI, Value *V1, Value *V2,
                               Instruction::CastOps *CastOp) {
-  CastInst *CI = dyn_cast<CastInst>(V1);
-  Constant *C = dyn_cast<Constant>(V2);
-  if (!CI)
+  auto *Cast1 = dyn_cast<CastInst>(V1);
+  if (!Cast1)
     return nullptr;
-  *CastOp = CI->getOpcode();
 
-  if (auto *CI2 = dyn_cast<CastInst>(V2)) {
-    // If V1 and V2 are both the same cast from the same type, we can look
-    // through V1.
-    if (CI2->getOpcode() == CI->getOpcode() &&
-        CI2->getSrcTy() == CI->getSrcTy())
-      return CI2->getOperand(0);
-    return nullptr;
-  } else if (!C) {
+  *CastOp = Cast1->getOpcode();
+  Type *SrcTy = Cast1->getSrcTy();
+  if (auto *Cast2 = dyn_cast<CastInst>(V2)) {
+    // If V1 and V2 are both the same cast from the same type, look through V1.
+    if (*CastOp == Cast2->getOpcode() && SrcTy == Cast2->getSrcTy())
+      return Cast2->getOperand(0);
     return nullptr;
   }
 
+  auto *C = dyn_cast<Constant>(V2);
+  if (!C)
+    return nullptr;
+
   Constant *CastedTo = nullptr;
-
-  if (isa<ZExtInst>(CI) && CmpI->isUnsigned())
-    CastedTo = ConstantExpr::getTrunc(C, CI->getSrcTy());
-
-  if (isa<SExtInst>(CI) && CmpI->isSigned())
-    CastedTo = ConstantExpr::getTrunc(C, CI->getSrcTy(), true);
-
-  if (isa<TruncInst>(CI))
-    CastedTo = ConstantExpr::getIntegerCast(C, CI->getSrcTy(), CmpI->isSigned());
-
-  if (isa<FPTruncInst>(CI))
-    CastedTo = ConstantExpr::getFPExtend(C, CI->getSrcTy(), true);
-
-  if (isa<FPExtInst>(CI))
-    CastedTo = ConstantExpr::getFPTrunc(C, CI->getSrcTy(), true);
-
-  if (isa<FPToUIInst>(CI))
-    CastedTo = ConstantExpr::getUIToFP(C, CI->getSrcTy(), true);
-
-  if (isa<FPToSIInst>(CI))
-    CastedTo = ConstantExpr::getSIToFP(C, CI->getSrcTy(), true);
-
-  if (isa<UIToFPInst>(CI))
-    CastedTo = ConstantExpr::getFPToUI(C, CI->getSrcTy(), true);
-
-  if (isa<SIToFPInst>(CI))
-    CastedTo = ConstantExpr::getFPToSI(C, CI->getSrcTy(), true);
+  switch (*CastOp) {
+  case Instruction::ZExt:
+    if (CmpI->isUnsigned())
+      CastedTo = ConstantExpr::getTrunc(C, SrcTy);
+    break;
+  case Instruction::SExt:
+    if (CmpI->isSigned())
+      CastedTo = ConstantExpr::getTrunc(C, SrcTy, true);
+    break;
+  case Instruction::Trunc:
+    CastedTo = ConstantExpr::getIntegerCast(C, SrcTy, CmpI->isSigned());
+    break;
+  case Instruction::FPTrunc:
+    CastedTo = ConstantExpr::getFPExtend(C, SrcTy, true);
+    break;
+  case Instruction::FPExt:
+    CastedTo = ConstantExpr::getFPTrunc(C, SrcTy, true);
+    break;
+  case Instruction::FPToUI:
+    CastedTo = ConstantExpr::getUIToFP(C, SrcTy, true);
+    break;
+  case Instruction::FPToSI:
+    CastedTo = ConstantExpr::getSIToFP(C, SrcTy, true);
+    break;
+  case Instruction::UIToFP:
+    CastedTo = ConstantExpr::getFPToUI(C, SrcTy, true);
+    break;
+  case Instruction::SIToFP:
+    CastedTo = ConstantExpr::getFPToSI(C, SrcTy, true);
+    break;
+  default:
+    break;
+  }
 
   if (!CastedTo)
     return nullptr;
 
-  Constant *CastedBack =
-      ConstantExpr::getCast(CI->getOpcode(), CastedTo, C->getType(), true);
   // Make sure the cast doesn't lose any information.
+  Constant *CastedBack =
+      ConstantExpr::getCast(*CastOp, CastedTo, C->getType(), true);
   if (CastedBack != C)
     return nullptr;
 

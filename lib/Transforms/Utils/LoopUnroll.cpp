@@ -27,6 +27,7 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
@@ -306,8 +307,10 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount, bool Force,
     Count = TripCount;
 
   // Don't enter the unroll code if there is nothing to do.
-  if (TripCount == 0 && Count < 2 && PeelCount == 0)
+  if (TripCount == 0 && Count < 2 && PeelCount == 0) {
+    DEBUG(dbgs() << "Won't unroll; almost nothing to do\n");
     return false;
+  }
 
   assert(Count > 0);
   assert(TripMultiple > 0);
@@ -362,8 +365,12 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount, bool Force,
                                   PreserveLCSSA)) {
     if (Force)
       RuntimeTripCount = false;
-    else
+    else {
+      DEBUG(
+          dbgs() << "Wont unroll; remainder loop could not be generated"
+                    "when assuming runtime trip count\n");
       return false;
+    }
   }
 
   // Notify ScalarEvolution that the loop will be substantially changed,
@@ -456,6 +463,12 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount, bool Force,
   for (Loop *SubLoop : *L)
     LoopsToSimplify.insert(SubLoop);
 
+  if (Header->getParent()->isDebugInfoForProfiling())
+    for (BasicBlock *BB : L->getBlocks())
+      for (Instruction &I : *BB)
+        if (const DILocation *DIL = I.getDebugLoc())
+          I.setDebugLoc(DIL->cloneWithDuplicationFactor(Count));
+
   for (unsigned It = 1; It != Count; ++It) {
     std::vector<BasicBlock*> NewBlocks;
     SmallDenseMap<const Loop *, Loop *, 4> NewLoops;
@@ -466,19 +479,16 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount, bool Force,
       BasicBlock *New = CloneBasicBlock(*BB, VMap, "." + Twine(It));
       Header->getParent()->getBasicBlockList().push_back(New);
 
+      assert((*BB != Header || LI->getLoopFor(*BB) == L) &&
+             "Header should not be in a sub-loop");
       // Tell LI about New.
-      if (*BB == Header) {
-        assert(LI->getLoopFor(*BB) == L && "Header should not be in a sub-loop");
-        L->addBasicBlockToLoop(New, *LI);
-      } else {
-        const Loop *OldLoop = addClonedBlockToLoopInfo(*BB, New, LI, NewLoops);
-        if (OldLoop) {
-          LoopsToSimplify.insert(NewLoops[OldLoop]);
+      const Loop *OldLoop = addClonedBlockToLoopInfo(*BB, New, LI, NewLoops);
+      if (OldLoop) {
+        LoopsToSimplify.insert(NewLoops[OldLoop]);
 
-          // Forget the old loop, since its inputs may have changed.
-          if (SE)
-            SE->forgetLoop(OldLoop);
-        }
+        // Forget the old loop, since its inputs may have changed.
+        if (SE)
+          SE->forgetLoop(OldLoop);
       }
 
       if (*BB == Header)

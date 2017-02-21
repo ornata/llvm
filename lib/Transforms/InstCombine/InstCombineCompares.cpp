@@ -230,7 +230,9 @@ Instruction *InstCombiner::foldCmpLoadFromIndexedGlobal(GetElementPtrInst *GEP,
     return nullptr;
 
   uint64_t ArrayElementCount = Init->getType()->getArrayNumElements();
-  if (ArrayElementCount > 1024) return nullptr; // Don't blow up on huge arrays.
+  // Don't blow up on huge arrays.
+  if (ArrayElementCount > MaxArraySizeForCombine)
+    return nullptr;
 
   // There are many forms of this optimization we can handle, for now, just do
   // the simple index into a single-dimensional array.
@@ -882,6 +884,10 @@ static Instruction *transformToIndexedCompare(GEPOperator *GEPLHS, Value *RHS,
                                               ICmpInst::Predicate Cond,
                                               const DataLayout &DL) {
   if (!GEPLHS->hasAllConstantIndices())
+    return nullptr;
+
+  // Make sure the pointers have the same type.
+  if (GEPLHS->getType() != RHS->getType())
     return nullptr;
 
   Value *PtrBase, *Index;
@@ -1659,7 +1665,7 @@ Instruction *InstCombiner::foldICmpAndConstConst(ICmpInst &Cmp,
       (Cmp.isEquality() || (!C1->isNegative() && !C2->isNegative()))) {
     // TODO: Is this a good transform for vectors? Wider types may reduce
     // throughput. Should this transform be limited (even for scalars) by using
-    // ShouldChangeType()?
+    // shouldChangeType()?
     if (!Cmp.getType()->isVectorTy()) {
       Type *WideType = W->getType();
       unsigned WideScalarBits = WideType->getScalarSizeInBits();
@@ -2366,8 +2372,24 @@ Instruction *InstCombiner::foldICmpAddConstant(ICmpInst &Cmp,
   // Fold icmp pred (add X, C2), C.
   Value *X = Add->getOperand(0);
   Type *Ty = Add->getType();
-  auto CR =
-      ConstantRange::makeExactICmpRegion(Cmp.getPredicate(), *C).subtract(*C2);
+  CmpInst::Predicate Pred = Cmp.getPredicate();
+
+  // If the add does not wrap, we can always adjust the compare by subtracting
+  // the constants. Equality comparisons are handled elsewhere. SGE/SLE are
+  // canonicalized to SGT/SLT.
+  if (Add->hasNoSignedWrap() &&
+      (Pred == ICmpInst::ICMP_SGT || Pred == ICmpInst::ICMP_SLT)) {
+    bool Overflow;
+    APInt NewC = C->ssub_ov(*C2, Overflow);
+    // If there is overflow, the result must be true or false.
+    // TODO: Can we assert there is no overflow because InstSimplify always
+    // handles those cases?
+    if (!Overflow)
+      // icmp Pred (add nsw X, C2), C --> icmp Pred X, (C - C2)
+      return new ICmpInst(Pred, X, ConstantInt::get(Ty, NewC));
+  }
+
+  auto CR = ConstantRange::makeExactICmpRegion(Pred, *C).subtract(*C2);
   const APInt &Upper = CR.getUpper();
   const APInt &Lower = CR.getLower();
   if (Cmp.isSigned()) {
@@ -2388,16 +2410,14 @@ Instruction *InstCombiner::foldICmpAddConstant(ICmpInst &Cmp,
   // X+C <u C2 -> (X & -C2) == C
   //   iff C & (C2-1) == 0
   //       C2 is a power of 2
-  if (Cmp.getPredicate() == ICmpInst::ICMP_ULT && C->isPowerOf2() &&
-      (*C2 & (*C - 1)) == 0)
+  if (Pred == ICmpInst::ICMP_ULT && C->isPowerOf2() && (*C2 & (*C - 1)) == 0)
     return new ICmpInst(ICmpInst::ICMP_EQ, Builder->CreateAnd(X, -(*C)),
                         ConstantExpr::getNeg(cast<Constant>(Y)));
 
   // X+C >u C2 -> (X & ~C2) != C
   //   iff C & C2 == 0
   //       C2+1 is a power of 2
-  if (Cmp.getPredicate() == ICmpInst::ICMP_UGT && (*C + 1).isPowerOf2() &&
-      (*C2 & *C) == 0)
+  if (Pred == ICmpInst::ICMP_UGT && (*C + 1).isPowerOf2() && (*C2 & *C) == 0)
     return new ICmpInst(ICmpInst::ICMP_NE, Builder->CreateAnd(X, ~(*C)),
                         ConstantExpr::getNeg(cast<Constant>(Y)));
 
@@ -2790,12 +2810,6 @@ Instruction *InstCombiner::foldICmpBinOp(ICmpInst &I) {
     C = BO1->getOperand(0);
     D = BO1->getOperand(1);
   }
-
-  // icmp (X+cst) < 0 --> X < -cst
-  if (NoOp0WrapProblem && ICmpInst::isSigned(Pred) && match(Op1, m_Zero()))
-    if (ConstantInt *RHSC = dyn_cast_or_null<ConstantInt>(B))
-      if (!RHSC->isMinValue(/*isSigned=*/true))
-        return new ICmpInst(Pred, A, ConstantExpr::getNeg(RHSC));
 
   // icmp (X+Y), X -> icmp Y, 0 for equalities or if there is no overflow.
   if ((A == Op1 || B == Op1) && NoOp0WrapProblem)
@@ -4088,11 +4102,6 @@ Instruction *InstCombiner::foldICmpUsingKnownBits(ICmpInst &I) {
         Constant *CMinus1 = ConstantInt::get(Op0->getType(), *CmpC - 1);
         return new ICmpInst(ICmpInst::ICMP_EQ, Op0, CMinus1);
       }
-      // (x <u 2147483648) -> (x >s -1)  -> true if sign bit clear
-      if (CmpC->isMinSignedValue()) {
-        Constant *AllOnes = Constant::getAllOnesValue(Op0->getType());
-        return new ICmpInst(ICmpInst::ICMP_SGT, Op0, AllOnes);
-      }
     }
     break;
   }
@@ -4112,11 +4121,6 @@ Instruction *InstCombiner::foldICmpUsingKnownBits(ICmpInst &I) {
       if (*CmpC == Op0Max - 1)
         return new ICmpInst(ICmpInst::ICMP_EQ, Op0,
                             ConstantInt::get(Op1->getType(), *CmpC + 1));
-
-      // (x >u 2147483647) -> (x <s 0)  -> true if sign bit set
-      if (CmpC->isMaxSignedValue())
-        return new ICmpInst(ICmpInst::ICMP_SLT, Op0,
-                            Constant::getNullValue(Op0->getType()));
     }
     break;
   }
@@ -4347,6 +4351,27 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
       if ((SI->getOperand(1) == Op0 && SI->getOperand(2) == Op1) ||
           (SI->getOperand(2) == Op0 && SI->getOperand(1) == Op1))
         return nullptr;
+
+  // FIXME: We only do this after checking for min/max to prevent infinite
+  // looping caused by a reverse canonicalization of these patterns for min/max.
+  // FIXME: The organization of folds is a mess. These would naturally go into
+  // canonicalizeCmpWithConstant(), but we can't move all of the above folds
+  // down here after the min/max restriction.
+  ICmpInst::Predicate Pred = I.getPredicate();
+  const APInt *C;
+  if (match(Op1, m_APInt(C))) {
+    // For i32: x >u 2147483647 -> x <s 0  -> true if sign bit set
+    if (Pred == ICmpInst::ICMP_UGT && C->isMaxSignedValue()) {
+      Constant *Zero = Constant::getNullValue(Op0->getType());
+      return new ICmpInst(ICmpInst::ICMP_SLT, Op0, Zero);
+    }
+
+    // For i32: x <u 2147483648 -> x >s -1  -> true if sign bit clear
+    if (Pred == ICmpInst::ICMP_ULT && C->isMinSignedValue()) {
+      Constant *AllOnes = Constant::getAllOnesValue(Op0->getType());
+      return new ICmpInst(ICmpInst::ICMP_SGT, Op0, AllOnes);
+    }
+  }
 
   if (Instruction *Res = foldICmpInstWithConstant(I))
     return Res;

@@ -266,10 +266,6 @@ def SIMM16bit : PatLeaf <(imm),
   [{return isInt<16>(N->getSExtValue());}]
 >;
 
-def IMM20bit : PatLeaf <(imm),
-  [{return isUInt<20>(N->getZExtValue());}]
->;
-
 class InlineImm <ValueType vt> : PatLeaf <(vt imm), [{
   return isInlineImmediate(N);
 }]>;
@@ -298,6 +294,19 @@ class VGPRImm <dag frag> : PatLeaf<frag, [{
 
   return Limit < 10;
 }]>;
+
+def NegateImm : SDNodeXForm<imm, [{
+  return CurDAG->getConstant(-N->getSExtValue(), SDLoc(N), MVT::i32);
+}]>;
+
+// TODO: When FP inline imm values work?
+def NegSubInlineConst32 : ImmLeaf<i32, [{
+  return Imm < -16 && Imm >= -64;
+}], NegateImm>;
+
+def NegSubInlineConst16 : ImmLeaf<i16, [{
+  return Imm < -16 && Imm >= -64;
+}], NegateImm>;
 
 //===----------------------------------------------------------------------===//
 // Custom Operands
@@ -594,6 +603,9 @@ def VOP3Mods0Clamp0OMod : ComplexPattern<untyped, 4, "SelectVOP3Mods0Clamp0OMod"
 def VOP3Mods  : ComplexPattern<untyped, 2, "SelectVOP3Mods">;
 def VOP3NoMods : ComplexPattern<untyped, 2, "SelectVOP3NoMods">;
 
+// VOP3Mods, but the input source is known to never be NaN.
+def VOP3Mods_nnan : ComplexPattern<fAny, 2, "SelectVOP3Mods_NNaN">;
+
 //===----------------------------------------------------------------------===//
 // SI assembler operands
 //===----------------------------------------------------------------------===//
@@ -607,6 +619,8 @@ def SIOperand {
 def SRCMODS {
   int NONE = 0;
   int NEG = 1;
+  int ABS = 2;
+  int NEG_ABS = 3;
 }
 
 def DSTCLAMP {
@@ -615,6 +629,11 @@ def DSTCLAMP {
 
 def DSTOMOD {
   int NONE = 0;
+}
+
+def TRAPTYPE {
+  int LLVM_TRAP = 1;
+  int LLVM_DEBUG_TRAP = 2;
 }
 
 //===----------------------------------------------------------------------===//
@@ -667,6 +686,7 @@ multiclass EXP_m<bit done, SDPatternOperator node> {
       def _si : EXP_Helper<done>,
                 SIMCInstr <"exp"#!if(done, "_done", ""), SIEncodingFamily.SI>,
                 EXPe {
+        let AssemblerPredicates = [isSICI];
         let DecoderNamespace = "SICI";
         let DisableDecoder = DisableSIDecoder;
       }
@@ -674,6 +694,7 @@ multiclass EXP_m<bit done, SDPatternOperator node> {
       def _vi : EXP_Helper<done>,
                 SIMCInstr <"exp"#!if(done, "_done", ""), SIEncodingFamily.VI>,
                 EXPe_vi {
+        let AssemblerPredicates = [isVI];
         let DecoderNamespace = "VI";
         let DisableDecoder = DisableVIDecoder;
       }
@@ -1118,6 +1139,8 @@ def VOP_F64_I32 : VOPProfile <[f64, i32, untyped, untyped]>;
 def VOP_I32_F32 : VOPProfile <[i32, f32, untyped, untyped]>;
 def VOP_I32_F64 : VOPProfile <[i32, f64, untyped, untyped]>;
 def VOP_I32_I32 : VOPProfile <[i32, i32, untyped, untyped]>;
+def VOP_F16_F32 : VOPProfile <[f16, f32, untyped, untyped]>;
+def VOP_F32_F16 : VOPProfile <[f32, f16, untyped, untyped]>;
 
 def VOP_F32_F32_F16 : VOPProfile <[f32, f32, f16, untyped]>;
 def VOP_F32_F32_F32 : VOPProfile <[f32, f32, f32, untyped]>;

@@ -737,11 +737,15 @@ public:
     return false;
   }
 
+  /// Return true if all the users of N are contained in Nodes.
+  /// NOTE: Requires at least one match, but doesn't require them all.
+  static bool areOnlyUsersOf(ArrayRef<const SDNode *> Nodes, const SDNode *N);
+
   /// Return the number of values used by this operation.
   unsigned getNumOperands() const { return NumOperands; }
 
   /// Helper method returns the integer value of a ConstantSDNode operand.
-  uint64_t getConstantOperandVal(unsigned Num) const;
+  inline uint64_t getConstantOperandVal(unsigned Num) const;
 
   const SDValue &getOperand(unsigned Num) const {
     assert(Num < NumOperands && "Invalid child # of SDNode!");
@@ -1395,6 +1399,10 @@ public:
            N->getOpcode() == ISD::TargetConstant;
   }
 };
+
+uint64_t SDNode::getConstantOperandVal(unsigned Num) const {
+  return cast<ConstantSDNode>(getOperand(Num))->getZExtValue();
+}
 
 class ConstantFPSDNode : public SDNode {
   const ConstantFP *Value;

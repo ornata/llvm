@@ -21,22 +21,24 @@
 using namespace llvm;
 
 
-static ArrayRef<MCPhysReg> getAllSGPR128(const MachineFunction &MF,
-                                         const SIRegisterInfo *TRI) {
+static ArrayRef<MCPhysReg> getAllSGPR128(const SISubtarget &ST,
+                                         const MachineFunction &MF) {
   return makeArrayRef(AMDGPU::SGPR_128RegClass.begin(),
-                      TRI->getMaxNumSGPRs(MF) / 4);
+                      ST.getMaxNumSGPRs(MF) / 4);
 }
 
-static ArrayRef<MCPhysReg> getAllSGPRs(const MachineFunction &MF,
-                                       const SIRegisterInfo *TRI) {
+static ArrayRef<MCPhysReg> getAllSGPRs(const SISubtarget &ST,
+                                       const MachineFunction &MF) {
   return makeArrayRef(AMDGPU::SGPR_32RegClass.begin(),
-                      TRI->getMaxNumSGPRs(MF));
+                      ST.getMaxNumSGPRs(MF));
 }
 
-void SIFrameLowering::emitFlatScratchInit(const SIInstrInfo *TII,
-                                          const SIRegisterInfo* TRI,
+void SIFrameLowering::emitFlatScratchInit(const SISubtarget &ST,
                                           MachineFunction &MF,
                                           MachineBasicBlock &MBB) const {
+  const SIInstrInfo *TII = ST.getInstrInfo();
+  const SIRegisterInfo* TRI = &TII->getRegisterInfo();
+
   // We don't need this if we only have spills since there is no user facing
   // scratch.
 
@@ -59,15 +61,27 @@ void SIFrameLowering::emitFlatScratchInit(const SIInstrInfo *TII,
   MRI.addLiveIn(FlatScratchInitReg);
   MBB.addLiveIn(FlatScratchInitReg);
 
-  // Copy the size in bytes.
-  unsigned FlatScrInitHi = TRI->getSubReg(FlatScratchInitReg, AMDGPU::sub1);
-  BuildMI(MBB, I, DL, TII->get(AMDGPU::COPY), AMDGPU::FLAT_SCR_LO)
-    .addReg(FlatScrInitHi, RegState::Kill);
-
   unsigned FlatScrInitLo = TRI->getSubReg(FlatScratchInitReg, AMDGPU::sub0);
+  unsigned FlatScrInitHi = TRI->getSubReg(FlatScratchInitReg, AMDGPU::sub1);
 
   const SIMachineFunctionInfo *MFI = MF.getInfo<SIMachineFunctionInfo>();
   unsigned ScratchWaveOffsetReg = MFI->getScratchWaveOffsetReg();
+
+  // Do a 64-bit pointer add.
+  if (ST.flatScratchIsPointer()) {
+    BuildMI(MBB, I, DL, TII->get(AMDGPU::S_ADD_U32), AMDGPU::FLAT_SCR_LO)
+      .addReg(FlatScrInitLo)
+      .addReg(ScratchWaveOffsetReg);
+    BuildMI(MBB, I, DL, TII->get(AMDGPU::S_ADDC_U32), AMDGPU::FLAT_SCR_HI)
+      .addReg(FlatScrInitHi)
+      .addImm(0);
+
+    return;
+  }
+
+  // Copy the size in bytes.
+  BuildMI(MBB, I, DL, TII->get(AMDGPU::COPY), AMDGPU::FLAT_SCR_LO)
+    .addReg(FlatScrInitHi, RegState::Kill);
 
   // Add wave offset in bytes to private base offset.
   // See comment in AMDKernelCodeT.h for enable_sgpr_flat_scratch_init.
@@ -111,16 +125,15 @@ unsigned SIFrameLowering::getReservedPrivateSegmentBufferReg(
   MachineRegisterInfo &MRI = MF.getRegInfo();
 
   unsigned NumPreloaded = (MFI->getNumPreloadedSGPRs() + 3) / 4;
-  ArrayRef<MCPhysReg> AllSGPR128s = getAllSGPR128(MF, TRI);
+  ArrayRef<MCPhysReg> AllSGPR128s = getAllSGPR128(ST, MF);
   AllSGPR128s = AllSGPR128s.slice(std::min(static_cast<unsigned>(AllSGPR128s.size()), NumPreloaded));
 
-  // Skip the last 2 elements because the last one is reserved for VCC, and
-  // this is the 2nd to last element already.
+  // Skip the last N reserved elements because they should have already been
+  // reserved for VCC etc.
   for (MCPhysReg Reg : AllSGPR128s) {
     // Pick the first unallocated one. Make sure we don't clobber the other
     // reserved input we needed.
     if (!MRI.isPhysRegUsed(Reg) && MRI.isAllocatable(Reg)) {
-      //assert(MRI.isAllocatable(Reg));
       MRI.replaceRegWith(ScratchRsrcReg, Reg);
       MFI->setScratchRSrcReg(Reg);
       return Reg;
@@ -143,10 +156,9 @@ unsigned SIFrameLowering::getReservedPrivateSegmentWaveByteOffsetReg(
 
   unsigned ScratchRsrcReg = MFI->getScratchRSrcReg();
   MachineRegisterInfo &MRI = MF.getRegInfo();
-
   unsigned NumPreloaded = MFI->getNumPreloadedSGPRs();
 
-  ArrayRef<MCPhysReg> AllSGPRs = getAllSGPRs(MF, TRI);
+  ArrayRef<MCPhysReg> AllSGPRs = getAllSGPRs(ST, MF);
   if (NumPreloaded > AllSGPRs.size())
     return ScratchWaveOffsetReg;
 
@@ -229,7 +241,7 @@ void SIFrameLowering::emitPrologue(MachineFunction &MF,
   // emitted after frame indices are eliminated.
 
   if (MF.getFrameInfo().hasStackObjects() && MFI->hasFlatScratchInit())
-    emitFlatScratchInit(TII, TRI, MF, MBB);
+    emitFlatScratchInit(ST, MF, MBB);
 
   // We need to insert initialization of the scratch resource descriptor.
   unsigned PreloadedScratchWaveOffsetReg = TRI->getPreloadedValue(
@@ -379,17 +391,45 @@ void SIFrameLowering::processFunctionBeforeFrameFinalized(
   if (!MFI.hasStackObjects())
     return;
 
-  bool MayNeedScavengingEmergencySlot = MFI.hasStackObjects();
+  assert(RS && "RegScavenger required if spilling");
+  int ScavengeFI = MFI.CreateStackObject(
+    AMDGPU::SGPR_32RegClass.getSize(),
+    AMDGPU::SGPR_32RegClass.getAlignment(), false);
+  RS->addScavengingFrameIndex(ScavengeFI);
 
-  assert((RS || !MayNeedScavengingEmergencySlot) &&
-         "RegScavenger required if spilling");
+  const SISubtarget &ST = MF.getSubtarget<SISubtarget>();
+  const SIInstrInfo *TII = ST.getInstrInfo();
+  const SIRegisterInfo &TRI = TII->getRegisterInfo();
+  if (!TRI.spillSGPRToVGPR())
+    return;
 
-  if (MayNeedScavengingEmergencySlot) {
-    int ScavengeFI = MFI.CreateStackObject(
-      AMDGPU::SGPR_32RegClass.getSize(),
-      AMDGPU::SGPR_32RegClass.getAlignment(), false);
-    RS->addScavengingFrameIndex(ScavengeFI);
+  SIMachineFunctionInfo *FuncInfo = MF.getInfo<SIMachineFunctionInfo>();
+  if (!FuncInfo->hasSpilledSGPRs())
+    return;
+
+  // Process all SGPR spills before frame offsets are finalized. Ideally SGPRs
+  // are spilled to VGPRs, in which case we can eliminate the stack usage.
+  //
+  // XXX - This operates under the assumption that only other SGPR spills are
+  // users of the frame index. I'm not 100% sure this is correct. The
+  // StackColoring pass has a comment saying a future improvement would be to
+  // merging of allocas with spill slots, but for now according to
+  // MachineFrameInfo isSpillSlot can't alias any other object.
+  for (MachineBasicBlock &MBB : MF) {
+    MachineBasicBlock::iterator Next;
+    for (auto I = MBB.begin(), E = MBB.end(); I != E; I = Next) {
+      MachineInstr &MI = *I;
+      Next = std::next(I);
+
+      if (TII->isSGPRSpill(MI)) {
+        int FI = TII->getNamedOperand(MI, AMDGPU::OpName::addr)->getIndex();
+        if (FuncInfo->allocateSGPRSpillToVGPR(MF, FI))
+          TRI.eliminateSGPRToVGPRSpillFrameIndex(MI, FI, RS);
+      }
+    }
   }
+
+  FuncInfo->removeSGPRToVGPRFrameIndices(MFI);
 }
 
 void SIFrameLowering::emitDebuggerPrologue(MachineFunction &MF,

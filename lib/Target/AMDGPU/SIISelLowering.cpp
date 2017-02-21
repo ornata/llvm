@@ -196,6 +196,9 @@ SITargetLowering::SITargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::BR_CC, MVT::f32, Expand);
   setOperationAction(ISD::BR_CC, MVT::f64, Expand);
 
+  setOperationAction(ISD::UADDO, MVT::i32, Legal);
+  setOperationAction(ISD::USUBO, MVT::i32, Legal);
+
   // We only support LOAD/STORE and vector manipulation ops for vectors
   // with > 4 elements.
   for (MVT VT : {MVT::v8i32, MVT::v8f32, MVT::v16i32, MVT::v16f32, MVT::v2i64, MVT::v2f64}) {
@@ -273,6 +276,7 @@ SITargetLowering::SITargetLowering(const TargetMachine &TM,
   // On SI this is s_memtime and s_memrealtime on VI.
   setOperationAction(ISD::READCYCLECOUNTER, MVT::i64, Legal);
   setOperationAction(ISD::TRAP, MVT::Other, Legal);
+  setOperationAction(ISD::DEBUGTRAP, MVT::Other, Legal);
 
   setOperationAction(ISD::FMINNUM, MVT::f64, Legal);
   setOperationAction(ISD::FMAXNUM, MVT::f64, Legal);
@@ -528,7 +532,7 @@ bool SITargetLowering::isLegalAddressingMode(const DataLayout &DL,
       // in 8-bits, it can use a smaller encoding.
       if (!isUInt<32>(AM.BaseOffs / 4))
         return false;
-    } else if (Subtarget->getGeneration() == SISubtarget::VOLCANIC_ISLANDS) {
+    } else if (Subtarget->getGeneration() >= SISubtarget::VOLCANIC_ISLANDS) {
       // On VI, these use the SMEM format and the offset is 20-bit in bytes.
       if (!isUInt<20>(AM.BaseOffs))
         return false;
@@ -688,18 +692,8 @@ bool SITargetLowering::isCheapAddrSpaceCast(unsigned SrcAS,
 
 bool SITargetLowering::isMemOpUniform(const SDNode *N) const {
   const MemSDNode *MemNode = cast<MemSDNode>(N);
-  const Value *Ptr = MemNode->getMemOperand()->getValue();
 
-  // UndefValue means this is a load of a kernel input.  These are uniform.
-  // Sometimes LDS instructions have constant pointers.
-  // If Ptr is null, then that means this mem operand contains a
-  // PseudoSourceValue like GOT.
-  if (!Ptr || isa<UndefValue>(Ptr) || isa<Argument>(Ptr) ||
-      isa<Constant>(Ptr) || isa<GlobalValue>(Ptr))
-    return true;
-
-  const Instruction *I = dyn_cast<Instruction>(Ptr);
-  return I && I->getMetadata("amdgpu.uniform");
+  return AMDGPU::isUniformMMO(MemNode->getMemOperand());
 }
 
 TargetLoweringBase::LegalizeTypeAction
@@ -1786,29 +1780,50 @@ MachineBasicBlock *SITargetLowering::EmitInstrWithCustomInserter(
   }
 
   switch (MI.getOpcode()) {
-   case AMDGPU::S_TRAP_PSEUDO: {
-	DebugLoc DL = MI.getDebugLoc();
-	BuildMI(*BB, MI, DL, TII->get(AMDGPU::V_MOV_B32_e32), AMDGPU::VGPR0)
-     .addImm(1);
+  case AMDGPU::S_TRAP_PSEUDO: {
+    const DebugLoc &DL = MI.getDebugLoc();
+    const int TrapType = MI.getOperand(0).getImm();
 
-    MachineFunction *MF = BB->getParent();
-    SIMachineFunctionInfo *Info = MF->getInfo<SIMachineFunctionInfo>();
-    unsigned UserSGPR = Info->getQueuePtrUserSGPR();
-    assert(UserSGPR != AMDGPU::NoRegister);
+    if (Subtarget->getTrapHandlerAbi() == SISubtarget::TrapHandlerAbiHsa &&
+        Subtarget->isTrapHandlerEnabled()) {
 
-    if (!BB->isLiveIn(UserSGPR))
-      BB->addLiveIn(UserSGPR);
+      MachineFunction *MF = BB->getParent();
+      SIMachineFunctionInfo *Info = MF->getInfo<SIMachineFunctionInfo>();
+      unsigned UserSGPR = Info->getQueuePtrUserSGPR();
+      assert(UserSGPR != AMDGPU::NoRegister);
 
-    BuildMI(*BB, MI, DL, TII->get(AMDGPU::COPY), AMDGPU::SGPR0_SGPR1)
-     .addReg(UserSGPR);
-    BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_TRAP)).addImm(0x1)
-     .addReg(AMDGPU::VGPR0, RegState::Implicit)
-     .addReg(AMDGPU::SGPR0_SGPR1, RegState::Implicit);
+      if (!BB->isLiveIn(UserSGPR))
+        BB->addLiveIn(UserSGPR);
+
+      BuildMI(*BB, MI, DL, TII->get(AMDGPU::COPY), AMDGPU::SGPR0_SGPR1)
+        .addReg(UserSGPR);
+      BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_TRAP))
+        .addImm(TrapType)
+        .addReg(AMDGPU::SGPR0_SGPR1, RegState::Implicit);
+    } else {
+      switch (TrapType) {
+      case SISubtarget::TrapCodeLLVMTrap:
+        BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_ENDPGM));
+        break;
+      case SISubtarget::TrapCodeLLVMDebugTrap: {
+        DiagnosticInfoUnsupported NoTrap(*MF->getFunction(),
+                                         "debugtrap handler not supported",
+                                         DL,
+                                         DS_Warning);
+        LLVMContext &C = MF->getFunction()->getContext();
+        C.diagnose(NoTrap);
+        BuildMI(*BB, MI, DL, TII->get(AMDGPU::S_NOP))
+          .addImm(0);
+        break;
+      }
+      default:
+        llvm_unreachable("unsupported trap handler type!");
+      }
+    }
 
     MI.eraseFromParent();
     return BB;
   }
-
   case AMDGPU::SI_INIT_M0:
     BuildMI(*BB, MI.getIterator(), MI.getDebugLoc(),
             TII->get(AMDGPU::S_MOV_B32), AMDGPU::M0)
@@ -2218,6 +2233,13 @@ SDValue SITargetLowering::lowerFP_ROUND(SDValue Op, SelectionDAG &DAG) const {
 
 SDValue SITargetLowering::getSegmentAperture(unsigned AS,
                                              SelectionDAG &DAG) const {
+
+  if (Subtarget->hasApertureRegs()) { // Read from Aperture Registers directly.
+    unsigned RegNo = (AS == AMDGPUAS::LOCAL_ADDRESS) ? AMDGPU::SRC_SHARED_BASE :
+                                                       AMDGPU::SRC_PRIVATE_BASE;
+    return CreateLiveInRegister(DAG, &AMDGPU::SReg_32RegClass, RegNo, MVT::i32);
+  }
+
   SDLoc SL;
   MachineFunction &MF = DAG.getMachineFunction();
   SIMachineFunctionInfo *Info = MF.getInfo<SIMachineFunctionInfo>();
@@ -2545,7 +2567,6 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   case Intrinsic::amdgcn_rcp:
     return DAG.getNode(AMDGPUISD::RCP, DL, VT, Op.getOperand(1));
   case Intrinsic::amdgcn_rsq:
-  case AMDGPUIntrinsic::AMDGPU_rsq: // Legacy name
     return DAG.getNode(AMDGPUISD::RSQ, DL, VT, Op.getOperand(1));
   case Intrinsic::amdgcn_rsq_legacy:
     if (Subtarget->getGeneration() >= SISubtarget::VOLCANIC_ISLANDS)
@@ -2669,35 +2690,10 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
                        Op.getOperand(1),
                        Op.getOperand(2),
                        Op.getOperand(3));
-
-  case AMDGPUIntrinsic::SI_fs_constant: {
-    SDValue M0 = copyToM0(DAG, DAG.getEntryNode(), DL, Op.getOperand(3));
-    SDValue Glue = M0.getValue(1);
-    return DAG.getNode(AMDGPUISD::INTERP_MOV, DL, MVT::f32,
-                       DAG.getConstant(2, DL, MVT::i32), // P0
-                       Op.getOperand(1), Op.getOperand(2), Glue);
-  }
   case AMDGPUIntrinsic::SI_packf16:
     if (Op.getOperand(1).isUndef() && Op.getOperand(2).isUndef())
       return DAG.getUNDEF(MVT::i32);
     return Op;
-  case AMDGPUIntrinsic::SI_fs_interp: {
-    SDValue IJ = Op.getOperand(4);
-    SDValue I = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, DL, MVT::i32, IJ,
-                            DAG.getConstant(0, DL, MVT::i32));
-    SDValue J = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, DL, MVT::i32, IJ,
-                            DAG.getConstant(1, DL, MVT::i32));
-    I = DAG.getNode(ISD::BITCAST, DL, MVT::f32, I);
-    J = DAG.getNode(ISD::BITCAST, DL, MVT::f32, J);
-    SDValue M0 = copyToM0(DAG, DAG.getEntryNode(), DL, Op.getOperand(3));
-    SDValue Glue = M0.getValue(1);
-    SDValue P1 = DAG.getNode(AMDGPUISD::INTERP_P1, DL,
-                             DAG.getVTList(MVT::f32, MVT::Glue),
-                             I, Op.getOperand(1), Op.getOperand(2), Glue);
-    Glue = SDValue(P1.getNode(), 1);
-    return DAG.getNode(AMDGPUISD::INTERP_P2, DL, MVT::f32, P1, J,
-                             Op.getOperand(1), Op.getOperand(2), Glue);
-  }
   case Intrinsic::amdgcn_interp_mov: {
     SDValue M0 = copyToM0(DAG, DAG.getEntryNode(), DL, Op.getOperand(4));
     SDValue Glue = M0.getValue(1);
@@ -2778,10 +2774,12 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   }
   case Intrinsic::amdgcn_icmp: {
     const auto *CD = dyn_cast<ConstantSDNode>(Op.getOperand(3));
-    int CondCode = CD->getSExtValue();
+    if (!CD)
+      return DAG.getUNDEF(VT);
 
+    int CondCode = CD->getSExtValue();
     if (CondCode < ICmpInst::Predicate::FIRST_ICMP_PREDICATE ||
-        CondCode >= ICmpInst::Predicate::BAD_ICMP_PREDICATE)
+        CondCode > ICmpInst::Predicate::LAST_ICMP_PREDICATE)
       return DAG.getUNDEF(VT);
 
     ICmpInst::Predicate IcInput = static_cast<ICmpInst::Predicate>(CondCode);
@@ -2791,10 +2789,12 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   }
   case Intrinsic::amdgcn_fcmp: {
     const auto *CD = dyn_cast<ConstantSDNode>(Op.getOperand(3));
-    int CondCode = CD->getSExtValue();
+    if (!CD)
+      return DAG.getUNDEF(VT);
 
-    if (CondCode <= FCmpInst::Predicate::FCMP_FALSE ||
-        CondCode >= FCmpInst::Predicate::FCMP_TRUE)
+    int CondCode = CD->getSExtValue();
+    if (CondCode < FCmpInst::Predicate::FIRST_FCMP_PREDICATE ||
+        CondCode > FCmpInst::Predicate::LAST_FCMP_PREDICATE)
       return DAG.getUNDEF(VT);
 
     FCmpInst::Predicate IcInput = static_cast<FCmpInst::Predicate>(CondCode);
@@ -2802,11 +2802,13 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     return DAG.getNode(AMDGPUISD::SETCC, DL, VT, Op.getOperand(1),
                        Op.getOperand(2), DAG.getCondCode(CCOpcode));
   }
+  case Intrinsic::amdgcn_fmed3:
+    return DAG.getNode(AMDGPUISD::FMED3, DL, VT,
+                       Op.getOperand(1), Op.getOperand(2), Op.getOperand(3));
   case Intrinsic::amdgcn_fmul_legacy:
     return DAG.getNode(AMDGPUISD::FMUL_LEGACY, DL, VT,
                        Op.getOperand(1), Op.getOperand(2));
   case Intrinsic::amdgcn_sffbh:
-  case AMDGPUIntrinsic::AMDGPU_flbit_i32: // Legacy name.
     return DAG.getNode(AMDGPUISD::FFBH_I32, DL, VT, Op.getOperand(1));
   default:
     return AMDGPUTargetLowering::LowerOperation(Op, DAG);
@@ -2918,16 +2920,12 @@ SDValue SITargetLowering::LowerINTRINSIC_VOID(SDValue Op,
     return DAG.getNode(Opc, DL, Op->getVTList(), Ops);
   }
   case Intrinsic::amdgcn_s_sendmsg:
-  case AMDGPUIntrinsic::SI_sendmsg: {
-    Chain = copyToM0(DAG, Chain, DL, Op.getOperand(3));
-    SDValue Glue = Chain.getValue(1);
-    return DAG.getNode(AMDGPUISD::SENDMSG, DL, MVT::Other, Chain,
-                       Op.getOperand(2), Glue);
-  }
   case Intrinsic::amdgcn_s_sendmsghalt: {
+    unsigned NodeOp = (IntrinsicID == Intrinsic::amdgcn_s_sendmsg) ?
+      AMDGPUISD::SENDMSG : AMDGPUISD::SENDMSGHALT;
     Chain = copyToM0(DAG, Chain, DL, Op.getOperand(3));
     SDValue Glue = Chain.getValue(1);
-    return DAG.getNode(AMDGPUISD::SENDMSGHALT, DL, MVT::Other, Chain,
+    return DAG.getNode(NodeOp, DL, MVT::Other, Chain,
                        Op.getOperand(2), Glue);
   }
   case AMDGPUIntrinsic::SI_tbuffer_store: {
@@ -4674,6 +4672,8 @@ SITargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
         return std::make_pair(0U, &AMDGPU::SReg_128RegClass);
       case 256:
         return std::make_pair(0U, &AMDGPU::SReg_256RegClass);
+      case 512:
+        return std::make_pair(0U, &AMDGPU::SReg_512RegClass);
       }
 
     case 'v':
