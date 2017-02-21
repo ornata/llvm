@@ -807,7 +807,9 @@ struct InstructionMapper {
     if (LegalInstrNumber >= IllegalInstrNumber)
       report_fatal_error("Instruction mapping overflow!");
 
-    assert(LegalInstrNumber != DenseMapInfo<unsigned>::get{Empty|Tombstone}Key()
+    assert(LegalInstrNumber != DenseMapInfo<unsigned>::getEmptyKey()
+          && "Tried to assign DenseMap tombstone or empty key to instruction.");
+    assert(LegalInstrNumber != DenseMapInfo<unsigned>::getTombstoneKey()
           && "Tried to assign DenseMap tombstone or empty key to instruction.");
 
     return MINumber;
@@ -845,7 +847,11 @@ struct InstructionMapper {
                "Instruction mapping overflow!");
 
         assert(IllegalInstrNumber != 
-          DenseMapInfo<unsigned>::get{Empty|Tombstone}Key()
+          DenseMapInfo<unsigned>::getEmptyKey()
+            && "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
+
+        assert(IllegalInstrNumber != 
+          DenseMapInfo<unsigned>::getTombstoneKey()
             && "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
         continue;
       }
