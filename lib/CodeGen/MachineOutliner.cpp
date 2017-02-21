@@ -165,18 +165,14 @@ struct SuffixTreeNode {
   /// the number of suffixes that the node's string is a prefix of.
   size_t OccurrenceCount = 0;
 
-  SuffixTreeNode(size_t StartIdx, size_t *EndIdx, SuffixTreeNode *Link,
-                 SuffixTreeNode *Parent)
-      : StartIdx(StartIdx), EndIdx(EndIdx), Link(Link), Parent(Parent) {}
-
-  SuffixTreeNode() {}
-
   /// Returns true if this node is a leaf.
   constexpr bool isLeaf() const { return SuffixIdx != EmptyIdx; }
   constexpr bool isRoot() const { return StartIdx == EmptyIdx; }
 
   /// The length of the substring associated with this node.
   size_t size() const {
+
+    // Root is the empty string.
     if (isRoot())
       return 0;
 
@@ -186,6 +182,12 @@ struct SuffixTreeNode {
     // For example, [0 1 2 3] has length 4, not 3.
     return *EndIdx - StartIdx + 1;
   }
+
+  SuffixTreeNode(size_t StartIdx, size_t *EndIdx, SuffixTreeNode *Link,
+                 SuffixTreeNode *Parent)
+      : StartIdx(StartIdx), EndIdx(EndIdx), Link(Link), Parent(Parent) {}
+
+  SuffixTreeNode() {}
 };
 
 /// A data structure for fast substring queries.
@@ -297,7 +299,6 @@ private:
                                                            E,
                                                            Root,
                                                            Parent);
-
     if (Parent)
       Parent->Children[Edge] = N;
 
@@ -338,9 +339,10 @@ private:
   ///
   /// \param EndIdx The end index of the current prefix in the main string.
   /// \param NeedsLink The internal \p SuffixTreeNode that needs a suffix link.
-  /// \param [in, out] SuffixesToAdd The number of suffixes that must be added
+  /// \param[in, out] SuffixesToAdd The number of suffixes that must be added
   /// to complete the suffix tree at the current phase.
-  void extend(size_t EndIdx, SuffixTreeNode *NeedsLink, size_t &SuffixesToAdd) {
+  unsigned extend(size_t EndIdx, size_t SuffixesToAdd) {
+    SuffixTreeNode *NeedsLink = nullptr;
 
     while (SuffixesToAdd > 0) {
     
@@ -367,6 +369,7 @@ private:
           NeedsLink->Link = Active.Node;
           NeedsLink = nullptr;
         }
+
       } else {
         // There *is* a match, so we have to traverse the tree and find out
         // where to put the node.
@@ -444,6 +447,8 @@ private:
         Active.Node = Active.Node->Link;
       }
     }
+
+    return SuffixesToAdd;
   }
 
   /// \brief Traverses the tree depth-first for the string with the highest
@@ -451,15 +456,16 @@ private:
   ///
   /// Helper function for \p bestRepeatedSubstring.
   ///
-  /// \param N The node currently being visited.
+  /// \param CurrNode The node currently being visited.
   /// \param CurrLen Length of the current string.
-  /// \param [out] BestLen Length of the most beneficial substring.
-  /// \param [out] MaxBenefit Benefit of the most beneficial substring.
-  /// \param [out] BestStartIdx Start index of the most beneficial substring.
+  /// \param[out] BestLen Length of the most beneficial substring.
+  /// \param[out] MaxBenefit Benefit of the most beneficial substring.
+  /// \param[out] BestStartIdx Start index of the most beneficial substring.
+  /// \param BenefitFn The function the query should maximize.
   void findBest(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &BestLen,
                 size_t &MaxBenefit, size_t &BestStartIdx,
                 const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)>
-                    &BenefitFn) {
+                &BenefitFn) {
 
     if (!CurrNode.IsInTree)
       return;
@@ -490,13 +496,11 @@ private:
   }
 
 public:
-  /// Return the element at index i in \p Str.
-  unsigned operator[](size_t i) { return Str[i]; }
 
   /// \brief Return the substring of the tree with maximal benefit if a
   /// beneficial substring exists.
   ///
-  /// \param [in,out] Best The most beneficial substring in the tree. Empty
+  /// \param[in,out] Best The most beneficial substring in the tree. Empty
   /// if it does not exist.
   void bestRepeatedSubstring(
       std::vector<unsigned> &Best,
@@ -643,7 +647,7 @@ public:
   /// their nodes.
   ///
   /// \param QueryString The string to search for.
-  /// \param [out] Occurrences The start indices of each occurrence.
+  /// \param[out] Occurrences The start indices of each occurrence.
   bool findOccurrencesAndPrune(const std::vector<unsigned> &QueryString,
                                std::vector<size_t> &Occurrences) {
     size_t Dummy = 0;
@@ -672,8 +676,7 @@ public:
   ///
   /// \param Str The string to construct the suffix tree for.
   SuffixTree(const std::vector<unsigned> &Str) : Str(Str) {
-    Root =
-        insertInternalNode(nullptr, EmptyIdx, EmptyIdx, 0);
+    Root = insertInternalNode(nullptr, EmptyIdx, EmptyIdx, 0);
     Root->IsInTree = true;
     Active.Node = Root;
     LeafVector.reserve(Str.size());
@@ -681,7 +684,6 @@ public:
     // Keep track of the number of suffixes we have to add of the current
     // prefix.
     size_t SuffixesToAdd = 0;
-    SuffixTreeNode *NeedsLink = nullptr; // The last internal node added
     Active.Node = Root;
 
     // Construct the suffix tree iteratively on each prefix of the string.
@@ -689,9 +691,8 @@ public:
     // End is one past the last element in the string.
     for (size_t PfxEndIdx = 0, End = Str.size(); PfxEndIdx < End; PfxEndIdx++) {
       SuffixesToAdd++;
-      NeedsLink = nullptr;
-      LeafEndIdx = PfxEndIdx;
-      extend(PfxEndIdx, NeedsLink, SuffixesToAdd);
+      LeafEndIdx = PfxEndIdx; // Extend each of the leaves.
+      SuffixesToAdd = extend(PfxEndIdx, SuffixesToAdd);
     }
 
     // Set the suffix indices of each leaf.
@@ -902,10 +903,9 @@ struct MachineOutliner : public ModulePass {
   /// described in \p FunctionList.
   ///
   /// \param M The module we are outlining from.
-  /// \param InstrList Contains a list of iterators so that the i-th index from
-  /// the suffix tree corresponds to the i-th instruction.
   /// \param CandidateList A list of candidates to be outlined.
-  /// \param FunctionList A list of functions to be inserted into the program.
+  /// \param FunctionList A list of functions to be inserted into the module.
+  /// \param Mapper Contains the instruction mappings for the module.
   bool outline(Module &M,
                const ArrayRef<Candidate> &CandidateList,
                std::vector<OutlinedFunction> &FunctionList,
@@ -921,11 +921,12 @@ struct MachineOutliner : public ModulePass {
   /// struct containing the information to build the function for that
   /// candidate.
   ///
-  /// \param [out] CandidateList Filled with outlining candidates for the
-  /// module.
-  /// \param [out] FunctionList Filled with functions corresponding to each
-  /// type of \p Candidate.
-  /// \param ST The suffix tree for the program.
+  /// \param[out] CandidateList Filled with outlining candidates for the module.
+  /// \param[out] FunctionList Filled with functions corresponding to each type
+  /// of \p Candidate.
+  /// \param ST The suffix tree for the module.
+  /// \param TII TargetInstrInfo for the module.
+  ///
   /// \returns The length of the longest candidate found. 0 if there are none.
   unsigned buildCandidateList(std::vector<Candidate> &CandidateList,
                               std::vector<OutlinedFunction> &FunctionList,
@@ -938,6 +939,11 @@ struct MachineOutliner : public ModulePass {
   /// If a short candidate is chosen for outlining, then a longer candidate
   /// which has that short candidate as a suffix is chosen, the tree's pruning
   /// method will not find it. Thus, we need to prune before outlining as well.
+  ///
+  /// \param[in,out] CandidateList A list of outlining candidates.
+  /// \param[in,out] FunctionList A list of functions to be outlined.
+  /// \param MaxCandidateLen The length of the longest candidate.
+  /// \param TII TargetInstrInfo for the program.
   void pruneOverlaps(std::vector<Candidate> &CandidateList,
                      std::vector<OutlinedFunction> &FunctionList,
                      unsigned MaxCandidateLen,
@@ -1251,7 +1257,7 @@ bool MachineOutliner::outline(
     // Statistics.
     NumOutlined++;
   }
-  
+  errs() << "OutlinedSomething = " << OutlinedSomething << "\n";
   return OutlinedSomething;
 }
 
