@@ -59,6 +59,7 @@
 #include <functional>
 #include <map>
 #include <sstream>
+#include <tuple>
 #include <vector>
 
 #define DEBUG_TYPE "machine-outliner"
@@ -275,12 +276,14 @@ private:
   ///
   /// \returns A pointer to the allocated leaf node.
   SuffixTreeNode *insertLeaf(SuffixTreeNode &Parent, size_t StartIdx,
-                             unsigned Edge) {
+    unsigned Edge) {
 
     assert(StartIdx <= LeafEndIdx && "String can't start after it ends!");
 
-    SuffixTreeNode *N = new (NodeAllocator)
-        SuffixTreeNode(StartIdx, &LeafEndIdx, nullptr, &Parent);
+    SuffixTreeNode *N = new (NodeAllocator) SuffixTreeNode(StartIdx, 
+                                                           &LeafEndIdx,
+                                                           nullptr,
+                                                           &Parent);
     Parent.Children[Edge] = N;
 
     return N;
@@ -295,15 +298,17 @@ private:
   ///
   /// \returns A pointer to the allocated internal node.
   SuffixTreeNode *insertInternalNode(SuffixTreeNode *Parent, size_t StartIdx,
-                                     size_t EndIdx, unsigned Edge) {
+                             size_t EndIdx, unsigned Edge) {
 
     assert(StartIdx <= EndIdx && "String can't start after it ends!");
     assert(!(!Parent && StartIdx != -1) &&
-           "Non-root internal nodes must have parents!");
+    "Non-root internal nodes must have parents!");
 
     size_t *E = new (InternalEndIdxAllocator) size_t(EndIdx);
-    SuffixTreeNode *N =
-        new (NodeAllocator) SuffixTreeNode(StartIdx, E, Root, Parent);
+    SuffixTreeNode *N = new (NodeAllocator) SuffixTreeNode(StartIdx,
+                                                           E,
+                                                           Root,
+                                                           Parent);
 
     if (Parent)
       Parent->Children[Edge] = N;
@@ -322,7 +327,8 @@ private:
 
     for (auto &ChildPair : CurrNode.Children) {
       assert(ChildPair.second && "Node had a null child!");
-      setSuffixIndices(*ChildPair.second, CurrIdx + ChildPair.second->size());
+      setSuffixIndices(*ChildPair.second,
+                       CurrIdx + ChildPair.second->size());
     }
 
     // If the node is a leaf, then we need to assign it a suffix index and also
@@ -408,8 +414,7 @@ private:
         // the old node and the new node as children. The split node's start
         // and end indices are those of the mapping we matched up to.
         SuffixTreeNode *SplitNode =
-            insertInternalNode(Active.Node, NextNode->StartIdx,
-                               NextNode->StartIdx + Active.Len - 1, FirstChar);
+            insertInternalNode(Active.Node, NextNode->StartIdx, NextNode->StartIdx + Active.Len - 1, FirstChar);
 
         // Insert the new node representing the new substring into the tree as
         // a child of the split node.
@@ -477,7 +482,7 @@ private:
                    BestLen, MaxBenefit, BestStartIdx, BenefitFn);
       }
     } else if (CurrNode.isLeaf() && CurrNode.Parent != Root &&
-               CurrNode.Parent->OccurrenceCount > 1) {
+             CurrNode.Parent->OccurrenceCount > 1) {
 
       // We hit a leaf. Check if we found a better substring than we had before.
       size_t StringLen = CurrLen - CurrNode.size();
@@ -782,27 +787,23 @@ struct InstructionMapper {
     // Get the integer for this instruction or give it the current
     // LegalInstrNumber.
     bool WasInserted;
-    unsigned Value;
-    auto I =
-        InstructionIntegerMap.insert(std::make_pair(&MI, LegalInstrNumber));
-    std::tie(Value, WasInserted) = I;
-    // auto I = InstructionIntegerMap.insert(std::make_pair(&MI,
-    // LegalInstrNumber));
+    auto It = InstructionIntegerMap.end();
+    std::tie(It, WasInserted) = InstructionIntegerMap.insert(std::make_pair(&MI, LegalInstrNumber));
+    unsigned MINumber = It->second;
 
     // There was an insertion.
     if (WasInserted) {
       LegalInstrNumber++;
-      IntegerInstructionMap.insert(std::make_pair(Value, &MI));
+      IntegerInstructionMap.insert(std::make_pair(MINumber, &MI));
     }
 
-    unsigned MINumber = Value;
     UnsignedVec.push_back(MINumber);
 
     // Make sure we don't overflow or use any integers reserved by the DenseMap.
     if (LegalInstrNumber >= IllegalInstrNumber)
       report_fatal_error("Instruction mapping overflow!");
 
-    assert(LegalInstrNumber != ::get{Empty | Tombstone} Key() &&
+    assert(LegalInstrNumber != ::get{Empty|Tombstone}Key() &&
            "Tried to assign DenseMap tombstone or empty key to instruction.");
 
     return MINumber;
@@ -823,10 +824,7 @@ struct InstructionMapper {
   /// \param BB The \p MachineBasicBlock to be translated into integers.
   /// \param TRI TargetRegisterInfo for the module.
   /// \param TII TargetInstrInfo for the module.
-  void convertToUnsignedVec(SmallSet<unsigned, 10> &ReturnIDs,
-                            MachineBasicBlock &MBB,
-                            const TargetRegisterInfo &TRI,
-                            const TargetInstrInfo &TII, bool IsLastBasicBlock) {
+  void convertToUnsignedVec(SmallSet<unsigned, 10> &ReturnIDs, MachineBasicBlock &MBB, const TargetRegisterInfo &TRI, const TargetInstrInfo &TII, bool IsLastBasicBlock) {
 
     for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end(); It != Et;
          It++) {
@@ -871,12 +869,11 @@ struct InstructionMapper {
   }
 
   InstructionMapper() {
-    // Make sure that the implementation of DenseMapInfo<unsigned> hasn't
-    // changed.
+    // Make sure that the implementation of DenseMapInfo<unsigned> hasn't changed.
     assert(DenseMapInfo<unsigned>::getEmptyKey() == (unsigned)-1 &&
-           "DenseMapInfo<unsigned>'s empty key isn't -1!");
+                "DenseMapInfo<unsigned>'s empty key isn't -1!");
     assert(DenseMapInfo<unsigned>::getTombstoneKey() == (unsigned)-2 &&
-           "DenseMapInfo<unsigned>'s tombstone key isn't -2!");
+                "DenseMapInfo<unsigned>'s tombstone key isn't -2!");
   }
 };
 
@@ -919,13 +916,14 @@ struct MachineOutliner : public ModulePass {
   /// the suffix tree corresponds to the i-th instruction.
   /// \param CandidateList A list of candidates to be outlined.
   /// \param FunctionList A list of functions to be inserted into the program.
-  bool outline(Module &M, const ArrayRef<Candidate> &CandidateList,
+  bool outline(Module &M,
+               const ArrayRef<Candidate> &CandidateList,
                std::vector<OutlinedFunction> &FunctionList,
                InstructionMapper &Mapper);
 
   /// Creates a function for \p OF and inserts it into the program.
-  MachineFunction *createOutlinedFunction(Module &M, const OutlinedFunction &OF,
-                                          InstructionMapper &Mapper);
+  MachineFunction *createOutlinedFunction(Module &M,
+                                          const OutlinedFunction &OF, InstructionMapper &Mapper);
 
   /// Find potential outlining candidates and store them in \p CandidateList.
   ///
@@ -1055,10 +1053,12 @@ void MachineOutliner::pruneOverlaps(std::vector<Candidate> &CandidateList,
       if (C2End < C1.StartIdx && C2.StartIdx < C1.StartIdx)
         continue;
 
-      DEBUG(size_t C1End = C1.StartIdx + C1.Len - 1;
+      DEBUG (
+            size_t C1End = C1.StartIdx + C1.Len - 1;
             dbgs() << "- Found an overlap to purge.\n";
             dbgs() << "--- C1 :[" << C1.StartIdx << ", " << C1End << "]\n";
-            dbgs() << "--- C2 :[" << C2.StartIdx << ", " << C2End << "]\n";);
+            dbgs() << "--- C2 :[" << C2.StartIdx << ", " << C2End << "]\n";
+            );
 
       FunctionList[C2.FunctionIdx].OccurrenceCount--;
 
@@ -1070,10 +1070,12 @@ void MachineOutliner::pruneOverlaps(std::vector<Candidate> &CandidateList,
 
       C2.InCandidateList = false;
 
-      DEBUG(dbgs() << "- Removed C2. Num fns left for C2: "
-                   << FunctionList[C2.FunctionIdx].OccurrenceCount << "\n";
+      DEBUG (
+            dbgs() << "- Removed C2. Num fns left for C2: "
+            << FunctionList[C2.FunctionIdx].OccurrenceCount << "\n";
             dbgs() << "- C2's benefit: " << FunctionList[C2.FunctionIdx].Benefit
-                   << "\n";);
+            << "\n";
+            );
     }
   }
 }
@@ -1163,8 +1165,7 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
 }
 
 MachineFunction *
-MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF,
-                                        InstructionMapper &Mapper) {
+MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF, InstructionMapper &Mapper) {
 
   // Create the function name. This should be unique. For now, just hash the
   // module name and include it in the function name plus the number of this
@@ -1214,10 +1215,11 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF,
   return &MF;
 }
 
-bool MachineOutliner::outline(Module &M,
-                              const ArrayRef<Candidate> &CandidateList,
-                              std::vector<OutlinedFunction> &FunctionList,
-                              InstructionMapper &Mapper) {
+bool MachineOutliner::outline(
+    Module &M, 
+    const ArrayRef<Candidate> &CandidateList,
+    std::vector<OutlinedFunction> &FunctionList,
+    InstructionMapper &Mapper) {
 
   bool OutlinedSomething = false;
 
