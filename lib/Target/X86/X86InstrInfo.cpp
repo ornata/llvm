@@ -10792,8 +10792,7 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
   if (MI.isReturn() || MI.isTerminator())
     return false;
 
-  // FIXME: Same as above.
-  if (MI.modifiesRegister(X86::RIP, &RI) ||
+  if (MI.readsRegister(X86::RIP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RIP) ||
       MI.getDesc().hasImplicitDefOfPhysReg(X86::RIP))
     return false;
@@ -10827,6 +10826,7 @@ void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                           MachineFunction &MF,
                                           bool IsTailCall) const {
 
+  // If we're tail calling then we don't have to do anything.
   if (IsTailCall)
     return;
 
@@ -10834,37 +10834,28 @@ void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
   MBB.insert(MBB.end(), retq);
 
   bool PrintName = false;
-  // hack: fixup stack stuff
+
   for (MachineInstr &MI : MBB) {
     if (isFrameStoreOpcode(MI.getOpcode()) &&
         MI.getOperand(0).getReg() == X86::RSP) {
       // Update the offset by the size of the pushed address.
-      errs() << "Before: ";
-      MI.dump();
       auto &Disp = MI.getOperand(X86::AddrDisp);
       int64_t oldDispVal = Disp.getImm();
       Disp.setImm(oldDispVal + 8);
       PrintName = true;
-      errs() << "After: ";
-      MI.dump();
     }
 
     if (isFrameLoadOpcode(MI.getOpcode()) &&
         MI.getOperand(5).getReg() == X86::RSP) {
       // Update the offset by the size of the pushed address.
-      errs() << "Before: ";
       MI.dump();
       auto &Disp = MI.getOperand(5 + X86::AddrDisp);
       int64_t oldDispVal = Disp.getImm();
       Disp.setImm(oldDispVal + 8);
       PrintName = true;
-      errs() << "After: ";
       MI.dump();
     }
   }
-
-  if (PrintName)
-    errs() << "Contained case we want to handle: " << MF.getName() << "\n";
 }
 
 void X86InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,

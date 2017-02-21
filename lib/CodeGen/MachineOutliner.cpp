@@ -158,16 +158,6 @@ struct SuffixTreeNode {
   /// instances of 2 3.
   SuffixTreeNode *Link = nullptr;
 
-  /// \brief For internal nodes, a pointer from the internal node representing
-  /// the same sequence with the first character chopped off.
-  ///
-  /// This is used during the pruning process. If a node N has a backlink
-  /// from a node M, then N is a proper suffix of M. Thus, if we outline all
-  /// instances of N, then it can never be the case that we can outline a
-  /// non-overlapping instance of M. Therefore, we can remove all such nodes
-  /// from the tree at the end of the round of outlining.
-  SuffixTreeNode *BackLink = nullptr;
-
   /// The parent of this node. Every node except for the root has a parent.
   SuffixTreeNode *Parent = nullptr;
 
@@ -355,16 +345,17 @@ private:
   void extend(size_t EndIdx, SuffixTreeNode *NeedsLink, size_t &SuffixesToAdd) {
 
     while (SuffixesToAdd > 0) {
-      // The length of the current string is 0, so we look at the last added
-      // character to our substring.
-      if (Active.Len == 0)
+    
+      // Are we waiting to add anything other than just the last character?
+      if (Active.Len == 0) {
+        // If not, then say the active index is the end index.
         Active.Idx = EndIdx;
+      }
 
       assert(Active.Idx <= EndIdx && "Start index can't be after end index!");
 
-      // The first and last character in the current substring we're looking at.
+      // The first character in the current substring we're looking at.
       unsigned FirstChar = Str[Active.Idx];
-      unsigned LastChar = Str[EndIdx];
 
       // During the previous step, we stopped on a node *and* it has no
       // transition to another node on the next character in our current
@@ -376,7 +367,6 @@ private:
         // need a link if it doesn't have one.
         if (NeedsLink) {
           NeedsLink->Link = Active.Node;
-          Active.Node->BackLink = NeedsLink;
           NeedsLink = nullptr;
         }
       } else {
@@ -395,11 +385,13 @@ private:
           continue;
         }
 
+        // The last character in the current substring we're looking at.
+        unsigned LastChar = Str[EndIdx];
+
         // The string is already in the tree, so we're done.
         if (Str[NextNode->StartIdx + Active.Len] == LastChar) {
           if (NeedsLink && !Active.Node->isRoot()) {
             NeedsLink->Link = Active.Node;
-            Active.Node->BackLink = NeedsLink;
             NeedsLink = nullptr;
           }
 
@@ -431,10 +423,8 @@ private:
 
         // We visited an internal node, so we need to set suffix links
         // accordingly.
-        if (NeedsLink != nullptr) {
+        if (NeedsLink)
           NeedsLink->Link = SplitNode;
-          SplitNode->BackLink = NeedsLink;
-        }
 
         NeedsLink = SplitNode;
       }
@@ -751,11 +741,11 @@ struct OutlinedFunction {
 
   bool IsTailCall = false;
 
-  OutlinedFunction(size_t Name_, size_t OccurrenceCount_,
-                   const std::vector<unsigned> &Sequence_,
-                   const unsigned &Benefit_)
-      : Name(Name_), OccurrenceCount(OccurrenceCount_), Sequence(Sequence_),
-        Benefit(Benefit_) {}
+  OutlinedFunction(size_t Name, size_t OccurrenceCount,
+                   const std::vector<unsigned> &Sequence,
+                   const unsigned &Benefit, const bool &IsTailCall)
+      : Name(Name), OccurrenceCount(OccurrenceCount), Sequence(Sequence),
+        Benefit(Benefit), IsTailCall(IsTailCall) {}
 };
 
 /// \brief Maps \p MachineInstrs to unsigned integers and stores the mappings.
@@ -890,9 +880,6 @@ struct MachineOutliner : public ModulePass {
 
   static char ID;
 
-  /// The ID of the last function created.
-  size_t CurrentFunctionID;
-
   StringRef getPassName() const override { return "MIR Function Outlining"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -957,7 +944,7 @@ struct MachineOutliner : public ModulePass {
 char MachineOutliner::ID = 0;
 
 namespace llvm {
-ModulePass *createOutlinerPass() { return new MachineOutliner(); }
+ModulePass *createMachineOutlinerPass() { return new MachineOutliner(); }
 }
 
 INITIALIZE_PASS(MachineOutliner, "machine-outliner",
@@ -1138,21 +1125,18 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
     // Make sure that whatever we're putting in the list is beneficial.
     assert(FnBenefit > 0 && "Unbeneficial function candidate!");
 
-    OutlinedFunction OF = OutlinedFunction(
-        FunctionList.size(), Occurrences.size(), CandidateSequence, FnBenefit);
-    OF.IsTailCall = IsTailCall;
-    FunctionList.push_back(OF);
+    FunctionList.emplace_back(
+        FunctionList.size(), Occurrences.size(), CandidateSequence, FnBenefit, IsTailCall);
 
     // Save each of the occurrences for the outlining process.
     for (size_t &Occ : Occurrences) {
-      CandidateList.push_back(Candidate(
+      CandidateList.emplace_back(
           Occ,                      // Starting idx in that MBB.
           CandidateSequence.size(), // Candidate length.
           FunctionList.size() - 1   // Idx of the corresponding function.
-          ));
+          );
     }
 
-    CurrentFunctionID++;
     FunctionsCreated++;
   }
 
@@ -1165,7 +1149,8 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
 }
 
 MachineFunction *
-MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF, InstructionMapper &Mapper) {
+MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF,
+  InstructionMapper &Mapper) {
 
   // Create the function name. This should be unique. For now, just hash the
   // module name and include it in the function name plus the number of this
@@ -1173,12 +1158,11 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF, I
   std::ostringstream NameStream;
   size_t HashedModuleName = std::hash<std::string>{}(M.getName().str());
   NameStream << "OUTLINED_FUNCTION" << HashedModuleName << "_" << OF.Name;
-  std::string *Name = new std::string(NameStream.str());
 
   // Create the function using an IR-level function.
   LLVMContext &C = M.getContext();
   Function *F = dyn_cast<Function>(
-      M.getOrInsertFunction(Name->c_str(), Type::getVoidTy(C), NULL));
+      M.getOrInsertFunction(NameStream.str(), Type::getVoidTy(C), NULL));
   assert(F && "Function was null!");
 
   // Allow the linker to merge together identical outlined functions between

@@ -674,7 +674,7 @@ void TargetPassConfig::addMachinePasses() {
   addPass(&PatchableFunctionID, false);
 
   if (EnableMIROutliner)
-    PM->add(createOutlinerPass());
+    PM->add(createMachineOutlinerPass());
 
   AddingMachinePasses = false;
 }

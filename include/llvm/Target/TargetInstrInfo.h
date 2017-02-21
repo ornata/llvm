@@ -1497,13 +1497,6 @@ public:
     return false;
   }
 
-private:
-  unsigned CallFrameSetupOpcode, CallFrameDestroyOpcode;
-  unsigned CatchRetOpcode;
-  unsigned ReturnOpcode;
-
-public:
-
   /// \brief Return how many instructions would be saved by outlining a
   /// sequence containing \p SequenceSize instructions that appears
   /// \p Occurrences times in a module.
@@ -1555,6 +1548,11 @@ public:
     llvm_unreachable("Target didn't implement "
                      "TargetInstrInfo::functionIsSafeToOutlineFrom!");
   }
+
+private:
+  unsigned CallFrameSetupOpcode, CallFrameDestroyOpcode;
+  unsigned CatchRetOpcode;
+  unsigned ReturnOpcode;
 };
 
 /// \brief Provide DenseMapInfo for TargetInstrInfo::RegSubRegPair.
