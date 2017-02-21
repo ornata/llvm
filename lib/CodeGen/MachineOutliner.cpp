@@ -291,7 +291,7 @@ private:
                              size_t EndIdx, unsigned Edge) {
 
     assert(StartIdx <= EndIdx && "String can't start after it ends!");
-    assert(!(!Parent && StartIdx != -1) &&
+    assert(!(!Parent && StartIdx != EmptyIdx) &&
     "Non-root internal nodes must have parents!");
 
     size_t *E = new (InternalEndIdxAllocator) size_t(EndIdx);
@@ -725,7 +725,7 @@ struct Candidate {
 
   /// \brief Used to ensure that \p Candidates are outlined in an order that
   /// preserves the start and end indices of other \p Candidates.
-  bool operator<(const Candidate &rhs) const { return StartIdx > rhs.StartIdx; }
+  bool operator<(const Candidate &RHS) const { return StartIdx > RHS.StartIdx; }
 };
 
 /// \brief Stores created outlined functions and the information needed to
@@ -807,8 +807,8 @@ struct InstructionMapper {
     if (LegalInstrNumber >= IllegalInstrNumber)
       report_fatal_error("Instruction mapping overflow!");
 
-    assert(LegalInstrNumber != ::get{Empty|Tombstone}Key() &&
-           "Tried to assign DenseMap tombstone or empty key to instruction.");
+    assert(LegalInstrNumber != DenseMapInfo<unsigned>::get{Empty|Tombstone}Key()
+          && "Tried to assign DenseMap tombstone or empty key to instruction.");
 
     return MINumber;
   }
@@ -844,8 +844,9 @@ struct InstructionMapper {
         assert(LegalInstrNumber < IllegalInstrNumber &&
                "Instruction mapping overflow!");
 
-        assert(IllegalInstrNumber != ::get{Empty|Tombstone}Key() &&
-               "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
+        assert(IllegalInstrNumber != 
+          DenseMapInfo<unsigned>::get{Empty|Tombstone}Key()
+            && "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
         continue;
       }
 
