@@ -598,8 +598,8 @@ private:
 
 public:
 
-  unsigned outliningBenefit(size_t SequenceSize, size_t Occurrences,
-                            bool CanBeTailCall) const override;
+  unsigned outliningBenefit(size_t SequenceSize,
+                            size_t Occurrences) const override;
 
   bool functionIsSafeToOutlineFrom(MachineFunction &MF) const override;
 
@@ -607,16 +607,16 @@ public:
 
   bool isFixablePostOutline(MachineInstr &MI) const;
 
-  void insertOutlinerEpilogue(MachineBasicBlock &MBB, MachineFunction &MF,
-                              bool IsTailCall) const override;
+  void insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                              MachineFunction &MF) const override;
 
-  void insertOutlinerPrologue(MachineBasicBlock &MBB, MachineFunction &MF,
-                              bool IsTailCall) const override;
+  void insertOutlinerPrologue(MachineBasicBlock &MBB,
+                              MachineFunction &MF) const override;
 
   MachineBasicBlock::iterator
   insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
-                     MachineBasicBlock::iterator &It, MachineFunction &MF,
-                     bool IsTailCall) const override;
+                     MachineBasicBlock::iterator &It,
+                     MachineFunction &MF) const override;
 };
 
 } // End llvm namespace

@@ -10753,8 +10753,8 @@ FunctionPass *llvm::createCleanupLocalDynamicTLSPass() {
   return new LDTLSCleanup();
 }
 
-unsigned X86InstrInfo::outliningBenefit(size_t SequenceSize, size_t Occurrences,
-                                        bool CanBeTailCall) const {
+unsigned X86InstrInfo::outliningBenefit(size_t SequenceSize,
+                                        size_t Occurrences) const {
   unsigned NotOutlinedSize = SequenceSize * Occurrences;
 
   // Sequence appears once in outlined function (Sequence.size())
@@ -10770,26 +10770,24 @@ bool X86InstrInfo::functionIsSafeToOutlineFrom(MachineFunction &MF) const {
   return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
 }
 
-bool X86InstrInfo::isFixablePostOutline(MachineInstr &MI) const {
-  if (!isFrameStoreOpcode(MI.getOpcode()) && !isFrameLoadOpcode(MI.getOpcode()))
-    return false;
-
-  switch (MI.getOpcode()) {
-  case X86::MOV64mr:
-    return MI.getOperand(0).getReg() == X86::RSP;
-  case X86::MOV64rm:
-    return MI.getOperand(5).getReg() == X86::RSP;
-  default:
-    break;
-  }
-
-  return false;
-}
-
 bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
 
   // Don't outline returns or basic block terminators.
   if (MI.isReturn() || MI.isTerminator())
+    return false;
+
+  // Don't outline anything that modifies or reads from the stack pointer.
+  //
+  // FIXME: There are instructions which are being manually built without
+  // explicit uses/defs so we also have to check the MCInstrDesc. We should be
+  // able to remove the extra checks once those are fixed up. For example,
+  // sometimes we might get something like %RAX<def> = POP64r 1. This won't be
+  // caught by modifiesRegister or readsRegister even though the instruction
+  // really ought to be formed so that modifiesRegister/readsRegister would
+  // catch it.
+  if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP))
     return false;
 
   if (MI.readsRegister(X86::RIP, &RI) ||
@@ -10805,78 +10803,27 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
         MOP.isTargetIndex())
       return false;
 
-  // Don't outline anything that modifies or reads from the stack pointer.
-  //
-  // FIXME: There are instructions which are being manually built without
-  // explicit uses/defs so we also have to check the MCInstrDesc. We should be
-  // able to remove the extra checks once those are fixed up. For example,
-  // sometimes we might get something like %RAX<def> = POP64r 1. This won't be
-  // caught by modifiesRegister or readsRegister even though the instruction
-  // really ought to be formed so that modifiesRegister/readsRegister would
-  // catch it.
-  if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI) ||
-      MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
-      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP))
-    return isFixablePostOutline(MI);
-
   return true;
 }
 
 void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
-                                          MachineFunction &MF,
-                                          bool IsTailCall) const {
-
-  // If we're tail calling then we don't have to do anything.
-  if (IsTailCall)
-    return;
+                                          MachineFunction &MF) const {
 
   MachineInstr *retq = BuildMI(MF, DebugLoc(), get(X86::RETQ));
   MBB.insert(MBB.end(), retq);
-
-  bool PrintName = false;
-
-  for (MachineInstr &MI : MBB) {
-    if (isFrameStoreOpcode(MI.getOpcode()) &&
-        MI.getOperand(0).getReg() == X86::RSP) {
-      // Update the offset by the size of the pushed address.
-      auto &Disp = MI.getOperand(X86::AddrDisp);
-      int64_t oldDispVal = Disp.getImm();
-      Disp.setImm(oldDispVal + 8);
-      PrintName = true;
-    }
-
-    if (isFrameLoadOpcode(MI.getOpcode()) &&
-        MI.getOperand(5).getReg() == X86::RSP) {
-      // Update the offset by the size of the pushed address.
-      MI.dump();
-      auto &Disp = MI.getOperand(5 + X86::AddrDisp);
-      int64_t oldDispVal = Disp.getImm();
-      Disp.setImm(oldDispVal + 8);
-      PrintName = true;
-      MI.dump();
-    }
-  }
 }
 
 void X86InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,
-                                          MachineFunction &MF,
-                                          bool IsTailCall) const {
+                                          MachineFunction &MF) const {
   return;
 }
 
 MachineBasicBlock::iterator
 X86InstrInfo::insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator &It,
-                                 MachineFunction &MF, bool IsTailCall) const {
-
-  if (IsTailCall) {
-    It = MBB.insert(It,
-                    BuildMI(MF, DebugLoc(), get(X86::JMP_1))
-                        .addGlobalAddress(M.getNamedValue(MF.getName())));
-  } else {
-    It = MBB.insert(It,
-                    BuildMI(MF, DebugLoc(), get(X86::CALL64pcrel32))
-                        .addGlobalAddress(M.getNamedValue(MF.getName())));
-  }
+                                 MachineFunction &MF) const {
+  It = MBB.insert(It,
+                  BuildMI(MF, DebugLoc(), get(X86::CALL64pcrel32))
+                      .addGlobalAddress(M.getNamedValue(MF.getName())));
   return It;
 }

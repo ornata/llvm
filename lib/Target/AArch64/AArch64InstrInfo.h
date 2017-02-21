@@ -138,9 +138,6 @@ public:
   bool shouldClusterMemOps(MachineInstr &FirstLdSt, MachineInstr &SecondLdSt,
                            unsigned NumLoads) const override;
 
-  bool shouldScheduleAdjacent(const MachineInstr &First,
-                              const MachineInstr &Second) const override;
-
   MachineInstr *emitFrameIndexDebugValue(MachineFunction &MF, int FrameIx,
                                          uint64_t Offset, const MDNode *Var,
                                          const MDNode *Expr,
@@ -222,9 +219,9 @@ public:
   /// Return true when there is potentially a faster code sequence
   /// for an instruction chain ending in <Root>. All potential patterns are
   /// listed in the <Patterns> array.
-  bool getMachineCombinerPatterns(
-      MachineInstr &Root,
-      SmallVectorImpl<MachineCombinerPattern> &Patterns) const override;
+  bool getMachineCombinerPatterns(MachineInstr &Root,
+                  SmallVectorImpl<MachineCombinerPattern> &Patterns)
+      const override;
   /// Return true when Inst is associative and commutative so that it can be
   /// reassociated.
   bool isAssociativeAndCommutative(const MachineInstr &Inst) const override;
@@ -253,23 +250,6 @@ private:
                              ArrayRef<MachineOperand> Cond) const;
   bool substituteCmpToZero(MachineInstr &CmpInstr, unsigned SrcReg,
                            const MachineRegisterInfo *MRI) const;
-
-  int fixupPostOutline(MachineInstr &MI) const;
-  unsigned outliningBenefit(size_t SequenceSize, size_t Occurrences,
-                            bool CanBeTailCall) const override;
-  bool functionIsSafeToOutlineFrom(MachineFunction &MF) const override;
-  bool isLegalToOutline(MachineInstr &MI) const override;
-
-  void insertOutlinerEpilogue(MachineBasicBlock &MBB, MachineFunction &MF,
-                              bool IsTailCall) const override;
-
-  void insertOutlinerPrologue(MachineBasicBlock &MBB, MachineFunction &M,
-                              bool IsTailCall) const override;
-
-  MachineBasicBlock::iterator
-  insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
-                     MachineBasicBlock::iterator &It, MachineFunction &MF,
-                     bool IsTailCall) const override;
 };
 
 /// emitFrameOffset - Emit instructions as needed to set DestReg to SrcReg
@@ -286,8 +266,8 @@ void emitFrameOffset(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
 /// FP. Return false if the offset could not be handled directly in MI, and
 /// return the left-over portion by reference.
 bool rewriteAArch64FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
-                              unsigned FrameReg, int &Offset,
-                              const AArch64InstrInfo *TII);
+                            unsigned FrameReg, int &Offset,
+                            const AArch64InstrInfo *TII);
 
 /// \brief Use to report the frame offset status in isAArch64FrameOffsetLegal.
 enum AArch64FrameOffsetStatus {
@@ -311,9 +291,9 @@ enum AArch64FrameOffsetStatus {
 /// (possibly with @p OutUnscaledOp if OutUseUnscaledOp is true) and that
 /// is a legal offset.
 int isAArch64FrameOffsetLegal(const MachineInstr &MI, int &Offset,
-                              bool *OutUseUnscaledOp = nullptr,
-                              unsigned *OutUnscaledOp = nullptr,
-                              int *EmittableOffset = nullptr);
+                            bool *OutUseUnscaledOp = nullptr,
+                            unsigned *OutUnscaledOp = nullptr,
+                            int *EmittableOffset = nullptr);
 
 static inline bool isUncondBranchOpcode(int Opc) { return Opc == AArch64::B; }
 
@@ -334,9 +314,7 @@ static inline bool isCondBranchOpcode(int Opc) {
   }
 }
 
-static inline bool isIndirectBranchOpcode(int Opc) {
-  return Opc == AArch64::BR;
-}
+static inline bool isIndirectBranchOpcode(int Opc) { return Opc == AArch64::BR; }
 
 } // end namespace llvm
 
