@@ -10407,6 +10407,10 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
   if (MI.isReturn() || MI.isTerminator())
     return false;
 
+  // Don't outline debug values.
+  if (MI.isDebugValue())
+    return false;
+
   // Don't outline anything that modifies or reads from the stack pointer.
   //
   // FIXME: There are instructions which are being manually built without
