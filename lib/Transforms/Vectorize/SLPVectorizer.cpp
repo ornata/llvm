@@ -304,7 +304,7 @@ public:
   typedef SmallVector<Instruction *, 16> InstrList;
   typedef SmallPtrSet<Value *, 16> ValueSet;
   typedef SmallVector<StoreInst *, 8> StoreList;
-  typedef MapVector<Value *, std::vector<DebugLoc>> ExtraValueToDebugLocsMap;
+  typedef MapVector<Value *, SmallVector<DebugLoc, 2>> ExtraValueToDebugLocsMap;
 
   BoUpSLP(Function *Func, ScalarEvolution *Se, TargetTransformInfo *Tti,
           TargetLibraryInfo *TLi, AliasAnalysis *Aa, LoopInfo *Li,
@@ -2878,7 +2878,8 @@ BoUpSLP::vectorizeTree(ExtraValueToDebugLocsMap &ExternallyUsedValues) {
       Value *Ex = Builder.CreateExtractElement(Vec, Lane);
       Ex = extend(ScalarRoot, Ex, Scalar->getType());
       CSEBlocks.insert(cast<Instruction>(Scalar)->getParent());
-      ExternallyUsedValues[Ex] = ExternallyUsedValues[Scalar];
+      auto &Locs = ExternallyUsedValues[Scalar];
+      ExternallyUsedValues.insert({Ex, Locs});
       ExternallyUsedValues.erase(Scalar);
       continue;
     }
@@ -4491,6 +4492,8 @@ public:
             Builder.CreateBinOp(ReductionOpcode, VectorizedTree, I);
       }
       for (auto &Pair : ExternallyUsedValues) {
+        assert(!Pair.second.empty() &&
+               "At least one DebugLoc must be inserted");
         // Add each externally used value to the final reduction.
         for (auto &DL : Pair.second) {
           Builder.SetCurrentDebugLocation(DL);
