@@ -1315,7 +1315,10 @@ bool MachineOutliner::outline(Module &M,
     NumOutlined++;
   }
 
-  errs() << "OutlinedSomething = " << OutlinedSomething << "\n";
+  DEBUG (
+    dbgs() << "OutlinedSomething = " << OutlinedSomething << "\n";
+  );
+  
   return OutlinedSomething;
 }
 

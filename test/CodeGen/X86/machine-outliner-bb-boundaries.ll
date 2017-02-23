@@ -1,5 +1,8 @@
 ; RUN: llc -enable-machine-outliner -march=x86-64 < %s | FileCheck %s
 
+; Make sure the outliner doesn't outline instructions that aren't in the same
+; basic block.
+
 @x = global i32 0, align 4
 
 ; Function Attrs: noinline noredzone nounwind ssp uwtable

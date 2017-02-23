@@ -1,5 +1,7 @@
 ; RUN: llc -enable-machine-outliner -march=x86-64 < %s | FileCheck %s
 
+; Make sure the outliner can create simple calls.
+
 @x = global i32 0, align 4
 
 ; Function Attrs: noinline noredzone nounwind ssp uwtable

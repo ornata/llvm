@@ -545,6 +545,26 @@ public:
 
   bool isTailCall(const MachineInstr &Inst) const override;
 
+  unsigned outliningBenefit(size_t SequenceSize,
+                            size_t Occurrences) const override;
+
+  bool functionIsSafeToOutlineFrom(MachineFunction &MF) const override;
+
+  bool isLegalToOutline(MachineInstr &MI) const override;
+
+  bool isFixablePostOutline(MachineInstr &MI) const;
+
+  void insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                              MachineFunction &MF) const override;
+
+  void insertOutlinerPrologue(MachineBasicBlock &MBB,
+                              MachineFunction &MF) const override;
+
+  MachineBasicBlock::iterator
+  insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
+                     MachineBasicBlock::iterator &It,
+                     MachineFunction &MF) const override;
+
 protected:
   /// Commutes the operands in the given instruction by changing the operands
   /// order and/or changing the instruction's opcode and/or the immediate value

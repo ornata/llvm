@@ -1,5 +1,7 @@
 ; RUN: llc -enable-machine-outliner -march=x86-64 < %s | FileCheck %s
 
+; Make sure the outliner never outlines call instructions.
+
 ; Function Attrs: noinline noredzone nounwind ssp uwtable
 define i32 @bar() #0 {
   ; CHECK-NOT: callq _OUTLINED_FUNCTION{{[0-9]+}}_0
