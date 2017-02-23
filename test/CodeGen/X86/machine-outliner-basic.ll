@@ -37,5 +37,3 @@ attributes #0 = { noredzone nounwind ssp uwtable "no-frame-pointer-elim"="true" 
 ; CHECK: movl  $3, -{{[0-9]+}}(%rbp)
 ; CHECK: movl  $4, -{{[0-9]+}}(%rbp)
 ; CHECK: retq
-
-
