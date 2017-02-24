@@ -10401,15 +10401,11 @@ bool X86InstrInfo::functionIsSafeToOutlineFrom(MachineFunction &MF) const {
   return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
 }
 
-bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
+X86GenInstrInfo::MachineOutlinerInstrType X86InstrInfo::outliningType(MachineInstr &MI) const {
 
   // Don't outline returns or basic block terminators.
   if (MI.isReturn() || MI.isTerminator())
-    return false;
-
-  // Don't outline debug values.
-  if (MI.isDebugValue())
-    return false;
+    return MachineOutlinerInstrType::Illegal;
 
   // Don't outline anything that modifies or reads from the stack pointer.
   //
@@ -10422,23 +10418,27 @@ bool X86InstrInfo::isLegalToOutline(MachineInstr &MI) const {
   // catch it.
   if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
-      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP))
-    return false;
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP)) 
+    return MachineOutlinerInstrType::Illegal;
 
   if (MI.readsRegister(X86::RIP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RIP) ||
       MI.getDesc().hasImplicitDefOfPhysReg(X86::RIP))
-    return false;
+    return MachineOutlinerInstrType::Illegal;
 
   if (MI.isPosition())
-    return false;
+    return MachineOutlinerInstrType::Illegal;
 
   for (const MachineOperand &MOP : MI.operands())
     if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || MOP.isFI() ||
         MOP.isTargetIndex())
-      return false;
+      return MachineOutlinerInstrType::Illegal;
 
-  return true;
+  // Don't allow debug values to impact outlining type.
+  if (MI.isDebugValue() || MI.isIndirectDebugValue())
+    return MachineOutlinerInstrType::Invisible;
+
+  return MachineOutlinerInstrType::Legal;
 }
 
 void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,

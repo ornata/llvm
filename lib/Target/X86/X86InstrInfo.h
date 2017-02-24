@@ -550,7 +550,7 @@ public:
 
   bool functionIsSafeToOutlineFrom(MachineFunction &MF) const override;
 
-  bool isLegalToOutline(MachineInstr &MI) const override;
+  llvm::X86GenInstrInfo::MachineOutlinerInstrType outliningType(MachineInstr &MI) const override;
 
   bool isFixablePostOutline(MachineInstr &MI) const;
 

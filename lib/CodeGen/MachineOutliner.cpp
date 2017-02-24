@@ -836,15 +836,23 @@ struct InstructionMapper {
   /// at index i in \p UnsignedVec for each index i.
   std::vector<MachineBasicBlock::iterator> InstrList;
 
-  /// Converts \p MI to an unsigned integer.
-  unsigned mapToUnsigned(MachineInstr &MI) {
+  /// \brief Maps \p *It to a legal integer.
+  ///
+  /// Updates \p InstrList, \p UnsignedVec, \p InstructionIntegerMap,
+  /// \p IntegerInstructionMap, and \p LegalInstrNumber.
+  ///
+  /// \returns The integer that \p *It was mapped to.
+  unsigned mapToLegalUnsigned(MachineBasicBlock::iterator &It) {
+
     // Get the integer for this instruction or give it the current
     // LegalInstrNumber.
+    InstrList.push_back(It);
+    MachineInstr &MI = *It;
     bool WasInserted;
-    auto It = InstructionIntegerMap.end();
-    std::tie(It, WasInserted) =
+    auto ResultIt = InstructionIntegerMap.end();
+    std::tie(ResultIt, WasInserted) =
     InstructionIntegerMap.insert(std::make_pair(&MI, LegalInstrNumber));
-    unsigned MINumber = It->second;
+    unsigned MINumber = ResultIt->second;
 
     // There was an insertion.
     if (WasInserted) {
@@ -862,6 +870,32 @@ struct InstructionMapper {
           && "Tried to assign DenseMap tombstone or empty key to instruction.");
     assert(LegalInstrNumber != DenseMapInfo<unsigned>::getTombstoneKey()
           && "Tried to assign DenseMap tombstone or empty key to instruction.");
+
+    return MINumber;
+  }
+
+  /// Maps \p *It to an illegal integer.
+  ///
+  /// Updates \p InstrList, \p UnsignedVec, and \p IllegalInstrNumber.
+  ///
+  /// \returns The integer that \p *It was mapped to.
+  unsigned mapToIllegalUnsigned(MachineBasicBlock::iterator &It) {
+    unsigned MINumber = IllegalInstrNumber;
+
+    InstrList.push_back(It);
+    UnsignedVec.push_back(IllegalInstrNumber);
+    IllegalInstrNumber--;
+
+    assert(LegalInstrNumber < IllegalInstrNumber &&
+           "Instruction mapping overflow!");
+
+    assert(IllegalInstrNumber != 
+      DenseMapInfo<unsigned>::getEmptyKey() &&
+      "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
+
+    assert(IllegalInstrNumber != 
+      DenseMapInfo<unsigned>::getTombstoneKey() && 
+      "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
 
     return MINumber;
   }
@@ -885,31 +919,18 @@ struct InstructionMapper {
          It++) {
 
       // Keep track of where this instruction is in the module.
-      InstrList.push_back(It);
-      MachineInstr &MI = *It;
+      switch(TII.outliningType(*It)) {
+        case TargetInstrInfo::MachineOutlinerInstrType::Illegal:
+          mapToIllegalUnsigned(It);
+          break;
 
-      // If it's not legal to outline, then give it an unique integer and move
-      // on. This way it will never appear in a repeated substring.
-      if (!TII.isLegalToOutline(MI)) {
-        UnsignedVec.push_back(IllegalInstrNumber);
-        IllegalInstrNumber--;
+        case TargetInstrInfo::MachineOutlinerInstrType::Legal:
+          mapToLegalUnsigned(It);
+          break;
 
-        assert(LegalInstrNumber < IllegalInstrNumber &&
-               "Instruction mapping overflow!");
-
-        assert(IllegalInstrNumber != 
-          DenseMapInfo<unsigned>::getEmptyKey()
-            && "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
-
-        assert(IllegalInstrNumber != 
-          DenseMapInfo<unsigned>::getTombstoneKey()
-            && "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
-        continue;
+        case TargetInstrInfo::MachineOutlinerInstrType::Invisible:
+          break;
       }
-
-      // It's safe and we're not the last instruction in the last basic block.
-      // Just map it and move on.
-      mapToUnsigned(MI);
     }
 
     // After we're done every insertion, uniquely terminate this part of the
@@ -1181,7 +1202,7 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
 
     // Is this candidate the longest so far?
     if (CandidateSequence.size() > MaxCandidateLen)
-      MaxCandidateLen = CandidateSequence.size() + 1;
+      MaxCandidateLen = CandidateSequence.size();
 
     // Keep track of the benefit of outlining this candidate in its
     // OutlinedFunction.
@@ -1226,8 +1247,7 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF,
   // module name and include it in the function name plus the number of this
   // function.
   std::ostringstream NameStream;
-  size_t HashedModuleName = std::hash<std::string>{}(M.getName().str());
-  NameStream << "OUTLINED_FUNCTION" << HashedModuleName << "_" << OF.Name;
+  NameStream << "OUTLINED_FUNCTION" << "_" << OF.Name;
 
   // Create the function using an IR-level function.
   LLVMContext &C = M.getContext();
@@ -1235,9 +1255,9 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF,
       M.getOrInsertFunction(NameStream.str(), Type::getVoidTy(C), NULL));
   assert(F && "Function was null!");
 
-  // Allow the linker to merge together identical outlined functions between
-  // modules.
-  F->setLinkage(GlobalValue::LinkOnceODRLinkage);
+  // NOTE: If this is linkonceodr, then we can take advantage of linker deduping
+  // which gives us better results when we outline from linkonceodr functions.
+  F->setLinkage(GlobalValue::PrivateLinkage);
   F->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
 
   BasicBlock *EntryBB = BasicBlock::Create(C, "entry", F);
@@ -1261,6 +1281,10 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF,
     MachineInstr *NewMI =
         MF.CloneMachineInstr(Mapper.IntegerInstructionMap.find(Str)->second);
     NewMI->dropMemRefs();
+
+    // Don't keep debug information for outlined instructions.
+    // FIXME: This means outlined functions are currently undebuggable.
+    NewMI->setDebugLoc(DebugLoc());
     MBB.insert(MBB.end(), NewMI);
   }
 
@@ -1293,6 +1317,11 @@ bool MachineOutliner::outline(Module &M,
     // If not, then outline it.
     MachineBasicBlock *MBB = (*Mapper.InstrList[C.StartIdx]).getParent();
     MachineBasicBlock::iterator StartIt = Mapper.InstrList[C.StartIdx];
+    unsigned EndIdx = C.StartIdx + C.Len - 1;
+
+    assert(EndIdx < Mapper.InstrList.size() && "Candidate out of bounds!");
+
+    MachineBasicBlock::iterator EndIt = Mapper.InstrList[EndIdx];
 
     // Does this candidate have a function yet?
     if (!OF.MF)
@@ -1303,10 +1332,8 @@ bool MachineOutliner::outline(Module &M,
     const TargetInstrInfo &TII = *STI.getInstrInfo();
 
     // Insert a call to the new function and erase the old sequence.
-    MachineBasicBlock::iterator EndIt = StartIt;
-    std::advance(EndIt, C.Len);
-    StartIt = TII.insertOutlinedCall(M, *MBB, StartIt, *MF);
-    ++StartIt;
+    TII.insertOutlinedCall(M, *MBB, StartIt, *MF);
+    StartIt = Mapper.InstrList[C.StartIdx];
     MBB->erase(StartIt, EndIt);
 
     OutlinedSomething = true;
@@ -1318,7 +1345,7 @@ bool MachineOutliner::outline(Module &M,
   DEBUG (
     dbgs() << "OutlinedSomething = " << OutlinedSomething << "\n";
   );
-  
+
   return OutlinedSomething;
 }
 

@@ -20,7 +20,7 @@ define i32 @main() #0 {
   br i1 %7, label %9, label %8
 
 ; <label>:8:                                      ; preds = %0
-  ; CHECK: callq _OUTLINED_FUNCTION{{[0-9]+}}_0
+  ; CHECK: callq l_OUTLINED_FUNCTION_0
   ; CHECK: cmpl  $0, -{{[0-9]+}}(%rbp)
   ; CHECK: jne  LBB0_{{[0-9]+}}
   store i32 1, i32* %2, align 4
@@ -39,7 +39,7 @@ define i32 @main() #0 {
   br i1 %12, label %14, label %13
 
 ; <label>:13:                                     ; preds = %10
-  ; CHECK: callq _OUTLINED_FUNCTION{{[0-9]+}}_0
+  ; CHECK: callq l_OUTLINED_FUNCTION_0
   ; CHECK: LBB0_6:
   store i32 1, i32* %2, align 4
   store i32 2, i32* %3, align 4
@@ -57,7 +57,7 @@ define i32 @main() #0 {
 
 attributes #0 = { noredzone nounwind ssp uwtable "no-frame-pointer-elim"="true" }
 
-; CHECK-LABEL: _OUTLINED_FUNCTION{{[0-9]+}}_0:
+; CHECK-LABEL: l_OUTLINED_FUNCTION_0:
 ; CHECK: movl  $1, -{{[0-9]+}}(%rbp)
 ; CHECK: movl  $2, -{{[0-9]+}}(%rbp)
 ; CHECK: movl  $3, -{{[0-9]+}}(%rbp)

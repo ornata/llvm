@@ -1511,13 +1511,22 @@ public:
   /// \brief Return how many instructions would be saved by outlining a
   /// sequence containing \p SequenceSize instructions that appears
   /// \p Occurrences times in a module.
-  virtual unsigned outliningBenefit(size_t SequenceSize, size_t Occurrences) const {
+  virtual unsigned outliningBenefit(size_t SequenceSize, size_t Occurrences)
+  const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::outliningBenefit!");
   }
 
+
+  /// Represents how an instruction should be mapped by the outliner.
+  /// \p Legal instructions are those which are safe to outline.
+  /// \p Illegal instructions are those which cannot be outlined.
+  /// \p Invisible instructions are instructions which can be outlined, but
+  /// shouldn't actually impact the outlining result.
+  enum MachineOutlinerInstrType {Legal, Illegal, Invisible};
+
   /// Return true if the instruction is legal to outline.
-  virtual bool isLegalToOutline(MachineInstr &MI) const {
+  virtual MachineOutlinerInstrType outliningType(MachineInstr &MI) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::isLegalToOutline!");
   }
@@ -1536,7 +1545,8 @@ public:
   /// implemented by the target.
   virtual MachineBasicBlock::iterator
   insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
-                     MachineBasicBlock::iterator &It, MachineFunction &MF) const {
+                     MachineBasicBlock::iterator &It, MachineFunction &MF)
+  const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinedCall!");
   }
