@@ -1322,6 +1322,7 @@ bool MachineOutliner::outline(Module &M,
     assert(EndIdx < Mapper.InstrList.size() && "Candidate out of bounds!");
 
     MachineBasicBlock::iterator EndIt = Mapper.InstrList[EndIdx];
+    EndIt++; // Erase needs one past the end index.
 
     // Does this candidate have a function yet?
     if (!OF.MF)
