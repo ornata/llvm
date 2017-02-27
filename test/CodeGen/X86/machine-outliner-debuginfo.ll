@@ -10,21 +10,21 @@ define i32 @main() #0 !dbg !11 {
   %4 = alloca i32, align 4
   %5 = alloca i32, align 4
   store i32 0, i32* %1, align 4
-  call void @llvm.dbg.declare(metadata i32* %2, metadata !14, metadata !15), !dbg !16
-  call void @llvm.dbg.declare(metadata i32* %3, metadata !17, metadata !15), !dbg !18
-  call void @llvm.dbg.declare(metadata i32* %4, metadata !19, metadata !15), !dbg !20
-  call void @llvm.dbg.declare(metadata i32* %5, metadata !21, metadata !15), !dbg !22
   store i32 0, i32* @x, align 4, !dbg !23
   ; CHECK: callq l_OUTLINED_FUNCTION_0
   store i32 1, i32* %2, align 4, !dbg !24
+  call void @llvm.dbg.declare(metadata i32* %2, metadata !14, metadata !15), !dbg !16
   store i32 2, i32* %3, align 4, !dbg !25
   store i32 3, i32* %4, align 4, !dbg !26
+  call void @llvm.dbg.declare(metadata i32* %3, metadata !17, metadata !15), !dbg !18
   store i32 4, i32* %5, align 4, !dbg !27
   store i32 1, i32* @x, align 4, !dbg !28
   ; CHECK: callq l_OUTLINED_FUNCTION_0
   store i32 1, i32* %2, align 4, !dbg !29
+  call void @llvm.dbg.declare(metadata i32* %4, metadata !19, metadata !15), !dbg !20
   store i32 2, i32* %3, align 4, !dbg !30
   store i32 3, i32* %4, align 4, !dbg !31
+  call void @llvm.dbg.declare(metadata i32* %5, metadata !21, metadata !15), !dbg !22
   store i32 4, i32* %5, align 4, !dbg !32
   ret i32 0, !dbg !33
 }
@@ -36,6 +36,7 @@ attributes #0 = { noredzone nounwind ssp uwtable "no-frame-pointer-elim"="true" 
 attributes #1 = { nounwind readnone }
 
 ; CHECK-LABEL: l_OUTLINED_FUNCTION_0:
+; CHECK-NOT:  .loc  {{[0-9]+}} {{[0-9]+}} {{[0-9]+}} {{^(is_stmt)}}
 ; CHECK:      movl  $1, -{{[0-9]+}}(%rbp)
 ; CHECK-NEXT: movl  $2, -{{[0-9]+}}(%rbp)
 ; CHECK-NEXT: movl  $3, -{{[0-9]+}}(%rbp)
