@@ -1511,10 +1511,10 @@ public:
   /// \brief Return how many instructions would be saved by outlining a
   /// sequence containing \p SequenceSize instructions that appears
   /// \p Occurrences times in a module.
-  virtual unsigned outliningBenefit(size_t SequenceSize, size_t Occurrences)
+  virtual unsigned getOutliningBenefit(size_t SequenceSize, size_t Occurrences)
   const {
     llvm_unreachable(
-        "Target didn't implement TargetInstrInfo::outliningBenefit!");
+        "Target didn't implement TargetInstrInfo::getOutliningBenefit!");
   }
 
 
@@ -1526,9 +1526,9 @@ public:
   enum MachineOutlinerInstrType {Legal, Illegal, Invisible};
 
   /// Return true if the instruction is legal to outline.
-  virtual MachineOutlinerInstrType outliningType(MachineInstr &MI) const {
+  virtual MachineOutlinerInstrType getOutliningType(MachineInstr &MI) const {
     llvm_unreachable(
-        "Target didn't implement TargetInstrInfo::isLegalToOutline!");
+        "Target didn't implement TargetInstrInfo::getOutliningType!");
   }
 
   /// Insert a custom epilogue for outlined functions.
@@ -1561,9 +1561,9 @@ public:
 
   /// Return true if the function can safely be outlined from.
   /// By default, this means that the function has no red zone.
-  virtual bool functionIsSafeToOutlineFrom(MachineFunction &F) const {
+  virtual bool isFunctionSafeToOutlineFrom(MachineFunction &F) const {
     llvm_unreachable("Target didn't implement "
-                     "TargetInstrInfo::functionIsSafeToOutlineFrom!");
+                     "TargetInstrInfo::isFunctionSafeToOutlineFrom!");
   }
 
 private:

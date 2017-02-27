@@ -779,8 +779,8 @@ struct Candidate {
   bool operator<(const Candidate &RHS) const { return StartIdx > RHS.StartIdx; }
 };
 
-/// \brief Stores created outlined functions and the information needed to
-/// construct them.
+/// \brief The information necessary to create an outlined function for some
+/// class of candidate.
 struct OutlinedFunction {
 
   /// The actual outlined function created.
@@ -797,7 +797,7 @@ struct OutlinedFunction {
   /// function.
   std::vector<unsigned> Sequence;
 
-  // The number of instructions this function would save.
+  /// The number of instructions this function would save.
   unsigned Benefit = 0;
 
   OutlinedFunction(size_t Name, size_t OccurrenceCount,
@@ -849,7 +849,8 @@ struct InstructionMapper {
     InstrList.push_back(It);
     MachineInstr &MI = *It;
     bool WasInserted;
-    auto ResultIt = InstructionIntegerMap.end();
+    DenseMap<MachineInstr *, unsigned, MachineInstrExpressionTrait>::iterator
+    ResultIt;
     std::tie(ResultIt, WasInserted) =
     InstructionIntegerMap.insert(std::make_pair(&MI, LegalInstrNumber));
     unsigned MINumber = ResultIt->second;
@@ -919,7 +920,7 @@ struct InstructionMapper {
          It++) {
 
       // Keep track of where this instruction is in the module.
-      switch(TII.outliningType(*It)) {
+      switch(TII.getOutliningType(*It)) {
         case TargetInstrInfo::MachineOutlinerInstrType::Illegal:
           mapToIllegalUnsigned(It);
           break;
@@ -1135,9 +1136,9 @@ void MachineOutliner::pruneOverlaps(std::vector<Candidate> &CandidateList,
       // Update the function's occurrence count and benefit to reflec that C2
       // is being removed.
       F2.OccurrenceCount--;
-      F2.Benefit = TII.outliningBenefit(F2.Sequence.size(),
-                                         F2.OccurrenceCount
-                                         );
+      F2.Benefit = TII.getOutliningBenefit(F2.Sequence.size(),
+                                           F2.OccurrenceCount
+                                           );
 
       // Mark C2 as not in the list.
       C2.InCandidateList = false;
@@ -1180,8 +1181,8 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
     if (Occurrences < 2)
       return 0u;
 
-    return TII.outliningBenefit(StringLen, Occurrences);
-  };
+    return TII.getOutliningBenefit(StringLen, Occurrences);
+  }    ;
 
   // Repeatedly query the suffix tree for the substring that maximizes
   // BenefitFn. Find the occurrences of that string, prune the tree, and store
@@ -1206,9 +1207,9 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
 
     // Keep track of the benefit of outlining this candidate in its
     // OutlinedFunction.
-    unsigned FnBenefit = TII.outliningBenefit(CandidateSequence.size(),
-                                               Occurrences.size()
-                                               );
+    unsigned FnBenefit = TII.getOutliningBenefit(CandidateSequence.size(),
+                                                 Occurrences.size()
+                                                 );
 
     assert(FnBenefit > 0 && "Function cannot be unbeneficial!");
 
@@ -1369,7 +1370,7 @@ bool MachineOutliner::runOnModule(Module &M) {
     MachineFunction &MF = MMI.getMachineFunction(F);
 
     // Is the function empty? Safe to outline from?
-    if (F.empty() || !TII->functionIsSafeToOutlineFrom(MF))
+    if (F.empty() || !TII->isFunctionSafeToOutlineFrom(MF))
       continue;
 
     // If it is, look at each MachineBasicBlock in the function.

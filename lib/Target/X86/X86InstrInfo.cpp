@@ -10384,8 +10384,8 @@ char LDTLSCleanup::ID = 0;
 FunctionPass*
 llvm::createCleanupLocalDynamicTLSPass() { return new LDTLSCleanup(); }
 
-unsigned X86InstrInfo::outliningBenefit(size_t SequenceSize,
-                                        size_t Occurrences) const {
+unsigned X86InstrInfo::getOutliningBenefit(size_t SequenceSize,
+                                           size_t Occurrences) const {
   unsigned NotOutlinedSize = SequenceSize * Occurrences;
 
   // Sequence appears once in outlined function (Sequence.size())
@@ -10397,11 +10397,12 @@ unsigned X86InstrInfo::outliningBenefit(size_t SequenceSize,
   return NotOutlinedSize > OutlinedSize ? NotOutlinedSize - OutlinedSize : 0;
 }
 
-bool X86InstrInfo::functionIsSafeToOutlineFrom(MachineFunction &MF) const {
+bool X86InstrInfo::isFunctionSafeToOutlineFrom(MachineFunction &MF) const {
   return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
 }
 
-X86GenInstrInfo::MachineOutlinerInstrType X86InstrInfo::outliningType(MachineInstr &MI) const {
+X86GenInstrInfo::MachineOutlinerInstrType
+X86InstrInfo::getOutliningType(MachineInstr &MI) const {
 
   // Don't outline returns or basic block terminators.
   if (MI.isReturn() || MI.isTerminator())

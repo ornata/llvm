@@ -545,12 +545,13 @@ public:
 
   bool isTailCall(const MachineInstr &Inst) const override;
 
-  unsigned outliningBenefit(size_t SequenceSize,
-                            size_t Occurrences) const override;
+  unsigned getOutliningBenefit(size_t SequenceSize,
+                               size_t Occurrences) const override;
 
-  bool functionIsSafeToOutlineFrom(MachineFunction &MF) const override;
+  bool isFunctionSafeToOutlineFrom(MachineFunction &MF) const override;
 
-  llvm::X86GenInstrInfo::MachineOutlinerInstrType outliningType(MachineInstr &MI) const override;
+  llvm::X86GenInstrInfo::MachineOutlinerInstrType
+  getOutliningType(MachineInstr &MI) const override;
 
   bool isFixablePostOutline(MachineInstr &MI) const;
 
