@@ -565,6 +565,39 @@ void APInt::setBit(unsigned bitPosition) {
     pVal[whichWord(bitPosition)] |= maskBit(bitPosition);
 }
 
+void APInt::setBits(unsigned loBit, unsigned hiBit) {
+  assert(hiBit <= BitWidth && "hiBit out of range");
+  assert(loBit <= hiBit && loBit <= BitWidth && "loBit out of range");
+
+  if (loBit == hiBit)
+    return;
+
+  if (isSingleWord())
+    *this |= APInt::getBitsSet(BitWidth, loBit, hiBit);
+  else {
+    unsigned hiBit1 = hiBit - 1;
+    unsigned loWord = whichWord(loBit);
+    unsigned hiWord = whichWord(hiBit1);
+    if (loWord == hiWord) {
+      // Set bits are all within the same word, create a [loBit,hiBit) mask.
+      uint64_t mask = UINT64_MAX;
+      mask >>= (APINT_BITS_PER_WORD - (hiBit - loBit));
+      mask <<= whichBit(loBit);
+      pVal[loWord] |= mask;
+    } else {
+      // Set bits span multiple words, create a lo mask with set bits starting
+      // at loBit, a hi mask with set bits below hiBit and set all bits of the
+      // words in between.
+      uint64_t loMask = UINT64_MAX << whichBit(loBit);
+      uint64_t hiMask = UINT64_MAX >> (64 - whichBit(hiBit1) - 1);
+      pVal[loWord] |= loMask;
+      pVal[hiWord] |= hiMask;
+      for (unsigned word = loWord + 1; word < hiWord; ++word)
+        pVal[word] = UINT64_MAX;
+    }
+  }
+}
+
 /// Set the given bit to 0 whose position is given as "bitPosition".
 /// @brief Set a given bit to 0.
 void APInt::clearBit(unsigned bitPosition) {
@@ -583,6 +616,42 @@ void APInt::flipBit(unsigned bitPosition) {
   assert(bitPosition < BitWidth && "Out of the bit-width range!");
   if ((*this)[bitPosition]) clearBit(bitPosition);
   else setBit(bitPosition);
+}
+
+APInt APInt::extractBits(unsigned numBits, unsigned bitPosition) const {
+  assert(numBits > 0 && "Can't extract zero bits");
+  assert(bitPosition < BitWidth && (numBits + bitPosition) <= BitWidth &&
+         "Illegal bit extraction");
+
+  if (isSingleWord())
+    return APInt(numBits, VAL >> bitPosition);
+
+  unsigned loBit = whichBit(bitPosition);
+  unsigned loWord = whichWord(bitPosition);
+  unsigned hiWord = whichWord(bitPosition + numBits - 1);
+
+  // Single word result extracting bits from a single word source.
+  if (loWord == hiWord)
+    return APInt(numBits, pVal[loWord] >> loBit);
+
+  // Extracting bits that start on a source word boundary can be done
+  // as a fast memory copy.
+  if (loBit == 0)
+    return APInt(numBits, makeArrayRef(pVal + loWord, 1 + hiWord - loWord));
+
+  // General case - shift + copy source words directly into place.
+  APInt Result(numBits, 0);
+  unsigned NumSrcWords = getNumWords();
+  unsigned NumDstWords = Result.getNumWords();
+
+  for (unsigned word = 0; word < NumDstWords; ++word) {
+    uint64_t w0 = pVal[loWord + word];
+    uint64_t w1 =
+        (loWord + word + 1) < NumSrcWords ? pVal[loWord + word + 1] : 0;
+    Result.pVal[word] = (w0 >> loBit) | (w1 << (APINT_BITS_PER_WORD - loBit));
+  }
+
+  return Result.clearUnusedBits();
 }
 
 unsigned APInt::getBitsNeeded(StringRef str, uint8_t radix) {
