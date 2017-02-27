@@ -1517,7 +1517,6 @@ public:
         "Target didn't implement TargetInstrInfo::getOutliningBenefit!");
   }
 
-
   /// Represents how an instruction should be mapped by the outliner.
   /// \p Legal instructions are those which are safe to outline.
   /// \p Illegal instructions are those which cannot be outlined.

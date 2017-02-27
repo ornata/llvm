@@ -168,10 +168,10 @@ struct SuffixTreeNode {
   size_t OccurrenceCount = 0;
 
   /// Returns true if this node is a leaf.
-  constexpr bool isLeaf() const { return SuffixIdx != EmptyIdx; }
+  bool isLeaf() const { return SuffixIdx != EmptyIdx; }
 
   /// Returns true if this node is the root of its owning \p SuffixTree.
-  constexpr bool isRoot() const { return StartIdx == EmptyIdx; }
+  bool isRoot() const { return StartIdx == EmptyIdx; }
 
   /// Return the number of elements in the substring associated with this node.
   size_t size() const {
@@ -915,7 +915,6 @@ struct InstructionMapper {
   void convertToUnsignedVec(MachineBasicBlock &MBB,
                             const TargetRegisterInfo &TRI,
                             const TargetInstrInfo &TII) {
-
     for (MachineBasicBlock::iterator It = MBB.begin(), Et = MBB.end(); It != Et;
          It++) {
 
@@ -938,7 +937,7 @@ struct InstructionMapper {
     // "string". This makes sure we won't match across basic block or function
     // boundaries since the "end" is encoded uniquely and thus appears in no
     // repeated substring.
-    InstrList.push_back(nullptr);
+    InstrList.push_back(MBB.end());
     UnsignedVec.push_back(IllegalInstrNumber);
     IllegalInstrNumber--;
   }
@@ -966,7 +965,7 @@ struct MachineOutliner : public ModulePass {
 
   static char ID;
 
-  StringRef getPassName() const override { return "MIR Function Outlining"; }
+  StringRef getPassName() const override { return "Machine Outliner"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MachineModuleInfo>();
@@ -1182,7 +1181,7 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
       return 0u;
 
     return TII.getOutliningBenefit(StringLen, Occurrences);
-  }    ;
+  };
 
   // Repeatedly query the suffix tree for the substring that maximizes
   // BenefitFn. Find the occurrences of that string, prune the tree, and store
@@ -1316,13 +1315,15 @@ bool MachineOutliner::outline(Module &M,
       continue;
 
     // If not, then outline it.
+    assert(C.StartIdx < Mapper.InstrList.size() && "Candidate out of bounds!");
     MachineBasicBlock *MBB = (*Mapper.InstrList[C.StartIdx]).getParent();
     MachineBasicBlock::iterator StartIt = Mapper.InstrList[C.StartIdx];
     unsigned EndIdx = C.StartIdx + C.Len - 1;
 
     assert(EndIdx < Mapper.InstrList.size() && "Candidate out of bounds!");
-
     MachineBasicBlock::iterator EndIt = Mapper.InstrList[EndIdx];
+    assert(EndIt != MBB->end() && "EndIt out of bounds!");
+
     EndIt++; // Erase needs one past the end index.
 
     // Does this candidate have a function yet?

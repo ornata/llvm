@@ -73,7 +73,6 @@ define i32 @no_empty_outlining() #0 {
   ret i32 0
 }
 
-
 ; Function Attrs: noinline noredzone nounwind ssp uwtable
 define i32 @main() #0 {
   ; CHECK-LABEL: _main:
@@ -98,7 +97,6 @@ define i32 @main() #0 {
   store i32 4, i32* %5, align 4
   ret i32 0
 }
-
 
 attributes #0 = { noredzone nounwind ssp uwtable "no-frame-pointer-elim"="true" }
 
