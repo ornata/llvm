@@ -2,7 +2,6 @@
 
 @x = global i32 0, align 4
 
-; Function Attrs: noinline noredzone nounwind ssp uwtable
 define i32 @check_boundaries() #0 {
   ; CHECK-LABEL: _check_boundaries:
   %1 = alloca i32, align 4
@@ -44,21 +43,18 @@ define i32 @check_boundaries() #0 {
   ret i32 0
 }
 
-; Function Attrs: noinline noredzone nounwind ssp uwtable
 define i32 @empty_1() #0 {
   ; CHECK-LABEL: _empty_1:
   ; CHECK-NOT: callq l_OUTLINED_FUNCTION_{{[0-9]+}}
   ret i32 1
 }
 
-; Function Attrs: noinline noredzone nounwind ssp uwtable
 define i32 @empty_2() #0 {
   ; CHECK-LABEL: _empty_2
   ; CHECK-NOT: callq l_OUTLINED_FUNCTION_{{[0-9]+}}
   ret i32 1
 }
 
-; Function Attrs: noinline noredzone nounwind ssp uwtable
 define i32 @no_empty_outlining() #0 {
   ; CHECK-LABEL: _no_empty_outlining:
   %1 = alloca i32, align 4
@@ -73,7 +69,6 @@ define i32 @no_empty_outlining() #0 {
   ret i32 0
 }
 
-; Function Attrs: noinline noredzone nounwind ssp uwtable
 define i32 @main() #0 {
   ; CHECK-LABEL: _main:
   %1 = alloca i32, align 4
