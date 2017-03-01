@@ -15,7 +15,6 @@
 #include "WebAssemblyUtilities.h"
 #include "WebAssemblyMachineFunctionInfo.h"
 #include "llvm/CodeGen/MachineInstr.h"
-#include "llvm/CodeGen/MachineLoopInfo.h"
 using namespace llvm;
 
 bool WebAssembly::isArgument(const MachineInstr &MI) {
@@ -86,12 +85,4 @@ bool WebAssembly::isCallIndirect(const MachineInstr &MI) {
   default:
     return false;
   }
-}
-
-MachineBasicBlock *llvm::LoopBottom(const MachineLoop *Loop) {
-  MachineBasicBlock *Bottom = Loop->getHeader();
-  for (MachineBasicBlock *MBB : Loop->blocks())
-    if (MBB->getNumber() > Bottom->getNumber())
-      Bottom = MBB;
-  return Bottom;
 }

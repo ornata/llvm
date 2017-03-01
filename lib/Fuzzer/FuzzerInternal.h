@@ -138,6 +138,11 @@ private:
   void DumpCurrentUnit(const char *Prefix);
   void DeathCallback();
 
+  void ResetEdgeCoverage();
+  void ResetCounters();
+  void PrepareCounters(Fuzzer::Coverage *C);
+  bool RecordMaxCoverage(Fuzzer::Coverage *C);
+
   void AllocateCurrentUnitData();
   uint8_t *CurrentUnitData = nullptr;
   std::atomic<size_t> CurrentUnitSize;

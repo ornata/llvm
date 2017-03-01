@@ -3093,15 +3093,13 @@ _func:
 @ SVC
 @------------------------------------------------------------------------------
         svc #0
-        it eq
+        ite eq
         svceq #255
-        it ne
         swine #33
 
 @ CHECK: svc	#0                      @ encoding: [0x00,0xdf]
-@ CHECK: it	eq                      @ encoding: [0x08,0xbf]
+@ CHECK: ite	eq                      @ encoding: [0x0c,0xbf]
 @ CHECK: svceq	#255                    @ encoding: [0xff,0xdf]
-@ CHECK: it	ne                      @ encoding: [0x18,0xbf]
 @ CHECK: svcne	#33                     @ encoding: [0x21,0xdf]
 
 

@@ -181,20 +181,12 @@ bool AMDGPUCodeGenPrepare::isSigned(const SelectInst &I) const {
 }
 
 bool AMDGPUCodeGenPrepare::needsPromotionToI32(const Type *T) const {
-  const IntegerType *IntTy = dyn_cast<IntegerType>(T);
-  if (IntTy && IntTy->getBitWidth() > 1 && IntTy->getBitWidth() <= 16)
+  if (T->isIntegerTy() && T->getIntegerBitWidth() > 1 &&
+      T->getIntegerBitWidth() <= 16)
     return true;
-
-  if (const VectorType *VT = dyn_cast<VectorType>(T)) {
-    // TODO: The set of packed operations is more limited, so may want to
-    // promote some anyway.
-    if (ST->hasVOP3PInsts())
-      return false;
-
-    return needsPromotionToI32(VT->getElementType());
-  }
-
-  return false;
+  if (!T->isVectorTy())
+    return false;
+  return needsPromotionToI32(cast<VectorType>(T)->getElementType());
 }
 
 // Return true if the op promoted to i32 should have nsw set.

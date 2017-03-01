@@ -1,4 +1,4 @@
-//===- DWARFCompileUnit.h ---------------------------------------*- C++ -*-===//
+//===-- DWARFCompileUnit.h --------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,11 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_DWARFCOMPILEUNIT_H
-#define LLVM_DEBUGINFO_DWARFCOMPILEUNIT_H
+#ifndef LLVM_LIB_DEBUGINFO_DWARFCOMPILEUNIT_H
+#define LLVM_LIB_DEBUGINFO_DWARFCOMPILEUNIT_H
 
 #include "llvm/DebugInfo/DWARF/DWARFUnit.h"
-#include "llvm/DebugInfo/DWARF/DWARFUnitIndex.h"
 
 namespace llvm {
 
@@ -24,15 +23,12 @@ public:
                    const DWARFUnitIndex::Entry *Entry)
       : DWARFUnit(Context, Section, DA, RS, SS, SOS, AOS, LS, LE, IsDWO,
                   UnitSection, Entry) {}
-
+  void dump(raw_ostream &OS);
+  static const DWARFSectionKind Section = DW_SECT_INFO;
   // VTable anchor.
   ~DWARFCompileUnit() override;
-
-  void dump(raw_ostream &OS);
-
-  static const DWARFSectionKind Section = DW_SECT_INFO;
 };
 
-} // end namespace llvm
+}
 
-#endif // LLVM_DEBUGINFO_DWARFCOMPILEUNIT_H
+#endif

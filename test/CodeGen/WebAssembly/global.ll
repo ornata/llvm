@@ -1,9 +1,9 @@
-; RUN: llc < %s -asm-verbose=false -disable-wasm-fallthrough-return-opt -disable-wasm-explicit-locals | FileCheck %s
+; RUN: llc < %s -asm-verbose=false -disable-wasm-fallthrough-return-opt | FileCheck %s
 
 ; Test that globals assemble as expected.
 
 target datalayout = "e-m:e-p:32:32-i64:64-n32:64-S128"
-target triple = "wasm32-unknown-unknown-wasm"
+target triple = "wasm32-unknown-unknown"
 
 ; CHECK-NOT: llvm.used
 ; CHECK-NOT: llvm.metadata
@@ -42,21 +42,15 @@ define i8* @call_memcpy(i8* %p, i8* nocapture readonly %q, i32 %n) {
 @ud = internal global i32 undef
 
 ; CHECK: .type nil,@object
-; CHECK: .p2align 2
-; CHECK: nil:
-; CHECK: .int32 0
-; CHECK: .size nil, 4
+; CHECK-NEXT: .lcomm nil,4,2{{$}}
 @nil = internal global i32 zeroinitializer
 
 ; CHECK: .type z,@object
-; CHECK: .p2align 2
-; CHECK: z:
-; CHECK: .int32 0
-; CHECK: .size z, 4
+; CHECK-NEXT: .lcomm z,4,2{{$}}
 @z = internal global i32 0
 
-; CHECK: .type one,@object
-; CHECK: .p2align 2{{$}}
+; CHECK-NEXT: .type one,@object
+; CHECK-NEXT: .p2align 2{{$}}
 ; CHECK-NEXT: one:
 ; CHECK-NEXT: .int32 1{{$}}
 ; CHECK-NEXT: .size one, 4{{$}}
@@ -84,17 +78,11 @@ define i8* @call_memcpy(i8* %p, i8* nocapture readonly %q, i32 %n) {
 @ud64 = internal global i64 undef
 
 ; CHECK: .type nil64,@object
-; CHECK: .p2align 3{{$}}
-; CHECK-NEXT: nil64:
-; CHECK-NEXT: .int64 0{{$}}
-; CHECK-NEXT: .size nil64, 8{{$}}
+; CHECK: .lcomm nil64,8,3{{$}}
 @nil64 = internal global i64 zeroinitializer
 
 ; CHECK: .type z64,@object
-; CHECK: .p2align 3{{$}}
-; CHECK-NEXT: z64:
-; CHECK-NEXT: .int64 0{{$}}
-; CHECK-NEXT: .size z64, 8{{$}}
+; CHECK: .lcomm z64,8,3{{$}}
 @z64 = internal global i64 0
 
 ; CHECK: .type twoP32,@object
@@ -119,17 +107,11 @@ define i8* @call_memcpy(i8* %p, i8* nocapture readonly %q, i32 %n) {
 @f32ud = internal global float undef
 
 ; CHECK: .type f32nil,@object
-; CHECK: .p2align 2{{$}}
-; CHECK-NEXT: f32nil:
-; CHECK-NEXT: .int32 0{{$}}
-; CHECK-NEXT: .size f32nil, 4{{$}}
+; CHECK: .lcomm f32nil,4,2{{$}}
 @f32nil = internal global float zeroinitializer
 
 ; CHECK: .type f32z,@object
-; CHECK: .p2align 2{{$}}
-; CHECK-NEXT: f32z:
-; CHECK-NEXT: .int32 0{{$}}
-; CHECK-NEXT: .size f32z, 4{{$}}
+; CHECK: .lcomm f32z,4,2{{$}}
 @f32z = internal global float 0.0
 
 ; CHECK: .type f32nz,@object
@@ -154,17 +136,11 @@ define i8* @call_memcpy(i8* %p, i8* nocapture readonly %q, i32 %n) {
 @f64ud = internal global double undef
 
 ; CHECK: .type f64nil,@object
-; CHECK: .p2align 3{{$}}
-; CHECK-NEXT: f64nil:
-; CHECK-NEXT: .int64 0{{$}}
-; CHECK-NEXT: .size f64nil, 8{{$}}
+; CHECK: .lcomm f64nil,8,3{{$}}
 @f64nil = internal global double zeroinitializer
 
 ; CHECK: .type f64z,@object
-; CHECK: .p2align 3{{$}}
-; CHECK-NEXT: f64z:
-; CHECK-NEXT: .int64 0{{$}}
-; CHECK-NEXT: .size f64z, 8{{$}}
+; CHECK: .lcomm f64z,8,3{{$}}
 @f64z = internal global double 0.0
 
 ; CHECK: .type f64nz,@object
@@ -192,7 +168,7 @@ define i8* @call_memcpy(i8* %p, i8* nocapture readonly %q, i32 %n) {
 
 ; Constant global.
 ; CHECK: .type    rom,@object{{$}}
-; CHECK: .section .rodata.rom,
+; CHECK: .section .rodata,"a",@progbits{{$}}
 ; CHECK: .globl   rom{{$}}
 ; CHECK: .p2align   4{{$}}
 ; CHECK: rom:
@@ -201,11 +177,11 @@ define i8* @call_memcpy(i8* %p, i8* nocapture readonly %q, i32 %n) {
 @rom = constant [128 x i32] zeroinitializer, align 16
 
 ; CHECK: .type       array,@object
-; CHECK: array:
+; CHECK-NEXT: array:
 ; CHECK-NEXT: .skip       8
 ; CHECK-NEXT: .size       array, 8
 ; CHECK: .type       pointer_to_array,@object
-; CHECK-NEXT: .section    .data.rel.ro.pointer_to_array,
+; CHECK-NEXT: .section    .data.rel.ro,"aw",@progbits
 ; CHECK-NEXT: .globl      pointer_to_array
 ; CHECK-NEXT: .p2align      2
 ; CHECK-NEXT: pointer_to_array:

@@ -1,4 +1,4 @@
-//===- BinaryItemStream.h ---------------------------------------*- C++ -*-===//
+//===- SequencedItemStream.h ------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,54 +7,52 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_MSF_BINARYITEMSTREAM_H
-#define LLVM_DEBUGINFO_MSF_BINARYITEMSTREAM_H
+#ifndef LLVM_DEBUGINFO_MSF_SEQUENCEDITEMSTREAM_H
+#define LLVM_DEBUGINFO_MSF_SEQUENCEDITEMSTREAM_H
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/DebugInfo/MSF/BinaryStream.h"
-#include "llvm/DebugInfo/MSF/BinaryStreamError.h"
+#include "llvm/DebugInfo/MSF/MSFError.h"
 #include "llvm/Support/Error.h"
 #include <cstddef>
 #include <cstdint>
 
 namespace llvm {
+namespace msf {
 
-template <typename T> struct BinaryItemTraits {
+template <typename T> struct SequencedItemTraits {
   static size_t length(const T &Item) = delete;
   static ArrayRef<uint8_t> bytes(const T &Item) = delete;
 };
 
-/// BinaryItemStream represents a sequence of objects stored in some kind of
-/// external container but for which it is useful to view as a stream of
-/// contiguous bytes.  An example of this might be if you have a collection of
-/// records and you serialize each one into a buffer, and store these serialized
-/// records in a container.  The pointers themselves are not laid out
-/// contiguously in memory, but we may wish to read from or write to these
-/// records as if they were.
-template <typename T, typename Traits = BinaryItemTraits<T>>
-class BinaryItemStream : public BinaryStream {
+/// SequencedItemStream represents a sequence of objects stored in a
+/// standard container but for which it is useful to view as a stream of
+/// contiguous bytes.  An example of this might be if you have a std::vector
+/// of TPI records, where each record contains a byte sequence that
+/// represents that one record serialized, but where each consecutive item
+/// might not be allocated immediately after the previous item.  Using a
+/// SequencedItemStream, we can adapt the VarStreamArray class to trivially
+/// extract one item at a time, allowing the data to be used anywhere a
+/// VarStreamArray could be used.
+template <typename T, typename Traits = SequencedItemTraits<T>>
+class SequencedItemStream : public ReadableStream {
 public:
-  explicit BinaryItemStream(llvm::support::endianness Endian)
-      : Endian(Endian) {}
-
-  llvm::support::endianness getEndian() const override { return Endian; }
+  SequencedItemStream() = default;
 
   Error readBytes(uint32_t Offset, uint32_t Size,
-                  ArrayRef<uint8_t> &Buffer) override {
+                  ArrayRef<uint8_t> &Buffer) const override {
     auto ExpectedIndex = translateOffsetIndex(Offset);
     if (!ExpectedIndex)
       return ExpectedIndex.takeError();
     const auto &Item = Items[*ExpectedIndex];
-    if (auto EC = checkOffset(Offset, Size))
-      return EC;
     if (Size > Traits::length(Item))
-      return make_error<BinaryStreamError>(stream_error_code::stream_too_short);
+      return make_error<MSFError>(msf_error_code::insufficient_buffer);
     Buffer = Traits::bytes(Item).take_front(Size);
     return Error::success();
   }
 
   Error readLongestContiguousChunk(uint32_t Offset,
-                                   ArrayRef<uint8_t> &Buffer) override {
+                                   ArrayRef<uint8_t> &Buffer) const override {
     auto ExpectedIndex = translateOffsetIndex(Offset);
     if (!ExpectedIndex)
       return ExpectedIndex.takeError();
@@ -64,7 +62,7 @@ public:
 
   void setItems(ArrayRef<T> ItemArray) { Items = ItemArray; }
 
-  uint32_t getLength() override {
+  uint32_t getLength() const override {
     uint32_t Size = 0;
     for (const auto &Item : Items)
       Size += Traits::length(Item);
@@ -82,14 +80,14 @@ private:
       ++CurrentIndex;
     }
     if (CurrentOffset != Offset)
-      return make_error<BinaryStreamError>(stream_error_code::stream_too_short);
+      return make_error<MSFError>(msf_error_code::insufficient_buffer);
     return CurrentIndex;
   }
 
-  llvm::support::endianness Endian;
   ArrayRef<T> Items;
 };
 
+} // end namespace msf
 } // end namespace llvm
 
-#endif // LLVM_DEBUGINFO_MSF_BINARYITEMSTREAM_H
+#endif // LLVM_DEBUGINFO_MSF_SEQUENCEDITEMSTREAM_H

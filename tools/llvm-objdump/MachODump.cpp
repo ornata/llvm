@@ -9535,8 +9535,7 @@ void llvm::printMachOBindTable(const object::MachOObjectFile *Obj) {
 
   outs() << "segment  section            address    type       "
             "addend dylib            symbol\n";
-  Error Err = Error::success();
-  for (const llvm::object::MachOBindEntry &Entry : Obj->bindTable(Err)) {
+  for (const llvm::object::MachOBindEntry &Entry : Obj->bindTable()) {
     uint32_t SegIndex = Entry.segmentIndex();
     uint64_t OffsetInSeg = Entry.segmentOffset();
     StringRef SegmentName = sectionTable.segmentName(SegIndex);
@@ -9556,8 +9555,6 @@ void llvm::printMachOBindTable(const object::MachOObjectFile *Obj) {
            << left_justify(ordinalName(Obj, Entry.ordinal()), 16) << " "
            << Entry.symbolName() << Attr << "\n";
   }
-  if (Err)
-    report_error(Obj->getFileName(), std::move(Err));
 }
 
 //===----------------------------------------------------------------------===//
@@ -9570,8 +9567,7 @@ void llvm::printMachOLazyBindTable(const object::MachOObjectFile *Obj) {
 
   outs() << "segment  section            address     "
             "dylib            symbol\n";
-  Error Err = Error::success();
-  for (const llvm::object::MachOBindEntry &Entry : Obj->lazyBindTable(Err)) {
+  for (const llvm::object::MachOBindEntry &Entry : Obj->lazyBindTable()) {
     uint32_t SegIndex = Entry.segmentIndex();
     uint64_t OffsetInSeg = Entry.segmentOffset();
     StringRef SegmentName = sectionTable.segmentName(SegIndex);
@@ -9586,8 +9582,6 @@ void llvm::printMachOLazyBindTable(const object::MachOObjectFile *Obj) {
            << left_justify(ordinalName(Obj, Entry.ordinal()), 16) << " "
            << Entry.symbolName() << "\n";
   }
-  if (Err)
-    report_error(Obj->getFileName(), std::move(Err));
 }
 
 //===----------------------------------------------------------------------===//
@@ -9600,8 +9594,7 @@ void llvm::printMachOWeakBindTable(const object::MachOObjectFile *Obj) {
 
   outs() << "segment  section            address     "
             "type       addend   symbol\n";
-  Error Err = Error::success();
-  for (const llvm::object::MachOBindEntry &Entry : Obj->weakBindTable(Err)) {
+  for (const llvm::object::MachOBindEntry &Entry : Obj->weakBindTable()) {
     // Strong symbols don't have a location to update.
     if (Entry.flags() & MachO::BIND_SYMBOL_FLAGS_NON_WEAK_DEFINITION) {
       outs() << "                                        strong              "
@@ -9623,8 +9616,6 @@ void llvm::printMachOWeakBindTable(const object::MachOObjectFile *Obj) {
            << format_decimal(Entry.addend(), 8) << "   " << Entry.symbolName()
            << "\n";
   }
-  if (Err)
-    report_error(Obj->getFileName(), std::move(Err));
 }
 
 // get_dyld_bind_info_symbolname() is used for disassembly and passed an
@@ -9636,22 +9627,16 @@ static const char *get_dyld_bind_info_symbolname(uint64_t ReferenceValue,
   if (info->bindtable == nullptr) {
     info->bindtable = llvm::make_unique<SymbolAddressMap>();
     SegInfo sectionTable(info->O);
-    Error Err = Error::success();
-    for (const llvm::object::MachOBindEntry &Entry : info->O->bindTable(Err)) {
+    for (const llvm::object::MachOBindEntry &Entry : info->O->bindTable()) {
       uint32_t SegIndex = Entry.segmentIndex();
       uint64_t OffsetInSeg = Entry.segmentOffset();
-      if (!sectionTable.isValidSegIndexAndOffset(SegIndex, OffsetInSeg)) {
-        if (Err)
-          report_error(info->O->getFileName(), std::move(Err));
+      if (!sectionTable.isValidSegIndexAndOffset(SegIndex, OffsetInSeg))
         return nullptr;
-      }
       uint64_t Address = sectionTable.address(SegIndex, OffsetInSeg);
       StringRef name = Entry.symbolName();
       if (!name.empty())
         (*info->bindtable)[Address] = name;
     }
-    if (Err)
-      report_error(info->O->getFileName(), std::move(Err));
   }
   auto name = info->bindtable->lookup(ReferenceValue);
   return !name.empty() ? name.data() : nullptr;

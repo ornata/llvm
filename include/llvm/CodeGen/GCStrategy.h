@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GCStrategy.h - Garbage collection -----------*- C++ -*-===//
+//===-- llvm/CodeGen/GCStrategy.h - Garbage collection ----------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -47,20 +47,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CODEGEN_GCSTRATEGY_H
-#define LLVM_CODEGEN_GCSTRATEGY_H
+#ifndef LLVM_IR_GCSTRATEGY_H
+#define LLVM_IR_GCSTRATEGY_H
 
-#include "llvm/ADT/None.h"
 #include "llvm/ADT/Optional.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Registry.h"
 #include <string>
 
 namespace llvm {
-
-class Type;
-
 namespace GC {
-
 /// PointKind - Used to indicate whether the address of the call instruction
 /// or the address after the call instruction is listed in the stackmap.  For
 /// most runtimes, PostCall safepoints are appropriate.
@@ -69,8 +68,7 @@ enum PointKind {
   PreCall, ///< Instr is a call instruction.
   PostCall ///< Instr is the return address of a call.
 };
-
-} // end namespace GC
+}
 
 /// GCStrategy describes a garbage collector algorithm's code generation
 /// requirements, and provides overridable hooks for those needs which cannot
@@ -79,25 +77,24 @@ enum PointKind {
 /// be immutable.
 class GCStrategy {
 private:
+  std::string Name;
   friend class GCModuleInfo;
 
-  std::string Name;
-
 protected:
-  bool UseStatepoints = false; /// Uses gc.statepoints as opposed to gc.roots,
-                               /// if set, none of the other options can be
-                               /// anything but their default values.
+  bool UseStatepoints; /// Uses gc.statepoints as opposed to gc.roots,
+                       /// if set, none of the other options can be
+                       /// anything but their default values.
 
-  unsigned NeededSafePoints = 0;    ///< Bitmask of required safe points.
-  bool CustomReadBarriers = false;  ///< Default is to insert loads.
-  bool CustomWriteBarriers = false; ///< Default is to insert stores.
-  bool CustomRoots = false;      ///< Default is to pass through to backend.
-  bool InitRoots= true;          ///< If set, roots are nulled during lowering.
-  bool UsesMetadata = false;     ///< If set, backend must emit metadata tables.
+  unsigned NeededSafePoints; ///< Bitmask of required safe points.
+  bool CustomReadBarriers;   ///< Default is to insert loads.
+  bool CustomWriteBarriers;  ///< Default is to insert stores.
+  bool CustomRoots;          ///< Default is to pass through to backend.
+  bool InitRoots;            ///< If set, roots are nulled during lowering.
+  bool UsesMetadata;         ///< If set, backend must emit metadata tables.
 
 public:
   GCStrategy();
-  virtual ~GCStrategy() = default;
+  virtual ~GCStrategy() {}
 
   /// Return the name of the GC strategy.  This is the value of the collector
   /// name string specified on functions which use this strategy.
@@ -175,7 +172,6 @@ public:
 /// register your GCMetadataPrinter subclass with the
 /// GCMetadataPrinterRegistery as well.
 typedef Registry<GCStrategy> GCRegistry;
+}
 
-} // end namespace llvm
-
-#endif // LLVM_CODEGEN_GCSTRATEGY_H
+#endif

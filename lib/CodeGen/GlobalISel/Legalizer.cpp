@@ -94,7 +94,10 @@ bool Legalizer::combineExtracts(MachineInstr &MI, MachineRegisterInfo &MRI,
            "unexpected physical register in G_SEQUENCE");
 
     // Finally we can replace the uses.
-    MRI.replaceRegWith(ExtractReg, OrigReg);
+    for (auto &Use : MRI.use_operands(ExtractReg)) {
+      Changed = true;
+      Use.setReg(OrigReg);
+    }
   }
 
   if (AllDefsReplaced) {

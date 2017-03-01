@@ -1259,10 +1259,9 @@ void Function::setValueSubclassDataBit(unsigned Bit, bool On) {
     setValueSubclassData(getSubclassDataFromValue() & ~(1 << Bit));
 }
 
-void Function::setEntryCount(uint64_t Count,
-                             const DenseSet<GlobalValue::GUID> *S) {
+void Function::setEntryCount(uint64_t Count) {
   MDBuilder MDB(getContext());
-  setMetadata(LLVMContext::MD_prof, MDB.createFunctionEntryCount(Count, S));
+  setMetadata(LLVMContext::MD_prof, MDB.createFunctionEntryCount(Count));
 }
 
 Optional<uint64_t> Function::getEntryCount() const {
@@ -1277,18 +1276,6 @@ Optional<uint64_t> Function::getEntryCount() const {
         return Count;
       }
   return None;
-}
-
-DenseSet<GlobalValue::GUID> Function::getImportGUIDs() const {
-  DenseSet<GlobalValue::GUID> R;
-  if (MDNode *MD = getMetadata(LLVMContext::MD_prof))
-    if (MDString *MDS = dyn_cast<MDString>(MD->getOperand(0)))
-      if (MDS->getString().equals("function_entry_count"))
-        for (unsigned i = 2; i < MD->getNumOperands(); i++)
-          R.insert(mdconst::extract<ConstantInt>(MD->getOperand(i))
-                       ->getValue()
-                       .getZExtValue());
-  return R;
 }
 
 void Function::setSectionPrefix(StringRef Prefix) {

@@ -1,4 +1,4 @@
-//===- DWARFDebugPubTable.cpp ---------------------------------------------===//
+//===-- DWARFDebugPubTable.cpp ---------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,16 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/DebugInfo/DWARF/DWARFDebugPubTable.h"
-#include "llvm/Support/DataExtractor.h"
-#include "llvm/Support/Dwarf.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
-#include <cstdint>
 
 using namespace llvm;
-using namespace dwarf;
+using namespace llvm::dwarf;
 
 DWARFDebugPubTable::DWARFDebugPubTable(StringRef Data, bool LittleEndian,
                                        bool GnuStyle)
@@ -58,7 +54,7 @@ void DWARFDebugPubTable::dump(StringRef Name, raw_ostream &OS) const {
       OS << format("0x%8.8x ", E.SecOffset);
       if (GnuStyle) {
         StringRef EntryLinkage =
-            GDBIndexEntryLinkageString(E.Descriptor.Linkage);
+            dwarf::GDBIndexEntryLinkageString(E.Descriptor.Linkage);
         StringRef EntryKind = dwarf::GDBIndexEntryKindString(E.Descriptor.Kind);
         OS << format("%-8s", EntryLinkage.data()) << ' '
            << format("%-8s", EntryKind.data()) << ' ';

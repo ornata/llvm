@@ -5,14 +5,13 @@
 ; conversions are implemented.
 
 target datalayout = "e-m:e-p:32:32-i64:64-n32:64-S128"
-target triple = "wasm32-unknown-unknown-wasm"
+target triple = "wasm32-unknown-unknown"
 
 ; CHECK-LABEL: test:
 ; CHECK-NEXT: i32.const   $push[[L0:[0-9]+]]=, 0{{$}}
 ; CHECK-NEXT: call        has_i64_arg@FUNCTION, $pop[[L0]]{{$}}
-; CHECK-NEXT: i32.call    $push{{[0-9]+}}=, has_i64_ret@FUNCTION{{$}}
-; CHECK-NEXT: drop
-; CHECK-NEXT: end_function
+; CHECK-NEXT: i32.call    $drop=, has_i64_ret@FUNCTION{{$}}
+; CHECK-NEXT: .endfunc
 
 ; CHECK-NOT: .Lbitcast
 

@@ -254,16 +254,12 @@ static void DiagnosticHandler(const DiagnosticInfo &DI, void *Context) {
 }
 
 static void InlineAsmDiagHandler(const SMDiagnostic &SMD, void *Context,
-                                 unsigned LocCookie) {
+                                 unsigned) {
   bool *HasError = static_cast<bool *>(Context);
   if (SMD.getKind() == SourceMgr::DK_Error)
     *HasError = true;
 
   SMD.print(nullptr, errs());
-
-  // For testing purposes, we print the LocCookie here.
-  if (LocCookie)
-    errs() << "note: !srcloc = " << LocCookie << "\n";
 }
 
 // main - Entry point for the llc compiler.

@@ -1,4 +1,4 @@
-//===- DWARFDebugLoc.cpp --------------------------------------------------===//
+//===-- DWARFDebugLoc.cpp -------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,15 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/DebugInfo/DWARF/DWARFDebugLoc.h"
-#include "llvm/DebugInfo/DWARF/DWARFRelocMap.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
-#include <algorithm>
-#include <cinttypes>
-#include <cstdint>
 
 using namespace llvm;
 
@@ -76,7 +71,7 @@ void DWARFDebugLoc::parse(DataExtractor data, unsigned AddressSize) {
     }
   }
   if (data.isValidOffset(Offset))
-    errs() << "error: failed to consume entire .debug_loc section\n";
+    llvm::errs() << "error: failed to consume entire .debug_loc section\n";
 }
 
 void DWARFDebugLocDWO::parse(DataExtractor data) {
@@ -90,8 +85,8 @@ void DWARFDebugLocDWO::parse(DataExtractor data) {
                 data.getU8(&Offset))) != dwarf::DW_LLE_end_of_list) {
 
       if (Kind != dwarf::DW_LLE_startx_length) {
-        errs() << "error: dumping support for LLE of kind " << (int)Kind
-               << " not implemented\n";
+        llvm::errs() << "error: dumping support for LLE of kind " << (int)Kind
+                     << " not implemented\n";
         return;
       }
 
@@ -128,3 +123,4 @@ void DWARFDebugLocDWO::dump(raw_ostream &OS) const {
     }
   }
 }
+

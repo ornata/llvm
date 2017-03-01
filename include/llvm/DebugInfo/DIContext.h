@@ -1,4 +1,4 @@
-//===- DIContext.h ----------------------------------------------*- C++ -*-===//
+//===-- DIContext.h ---------------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -32,14 +32,16 @@ class raw_ostream;
 struct DILineInfo {
   std::string FileName;
   std::string FunctionName;
-  uint32_t Line = 0;
-  uint32_t Column = 0;
-  uint32_t StartLine = 0;
+  uint32_t Line;
+  uint32_t Column;
+  uint32_t StartLine;
 
   // DWARF-specific.
-  uint32_t Discriminator = 0;
+  uint32_t Discriminator;
 
-  DILineInfo() : FileName("<invalid>"), FunctionName("<invalid>") {}
+  DILineInfo()
+      : FileName("<invalid>"), FunctionName("<invalid>"), Line(0), Column(0),
+        StartLine(0), Discriminator(0) {}
 
   bool operator==(const DILineInfo &RHS) const {
     return Line == RHS.Line && Column == RHS.Column &&
@@ -88,10 +90,10 @@ public:
 /// DIGlobal - container for description of a global variable.
 struct DIGlobal {
   std::string Name;
-  uint64_t Start = 0;
-  uint64_t Size = 0;
+  uint64_t Start;
+  uint64_t Size;
 
-  DIGlobal() : Name("<invalid>") {}
+  DIGlobal() : Name("<invalid>"), Start(0), Size(0) {}
 };
 
 /// A DINameKind is passed to name search methods to specify a
@@ -177,8 +179,8 @@ private:
 /// on the fly.
 class LoadedObjectInfo {
 protected:
-  LoadedObjectInfo() = default;
   LoadedObjectInfo(const LoadedObjectInfo &) = default;
+  LoadedObjectInfo() = default;
 
 public:
   virtual ~LoadedObjectInfo() = default;

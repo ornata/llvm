@@ -1,4 +1,4 @@
-//===- DWARFFormValue.h -----------------------------------------*- C++ -*-===//
+//===-- DWARFFormValue.h ----------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -11,14 +11,13 @@
 #define LLVM_DEBUGINFO_DWARFFORMVALUE_H
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/None.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Dwarf.h"
-#include <cstdint>
 
 namespace llvm {
 
+template <typename T> class ArrayRef;
 class DWARFUnit;
 class raw_ostream;
 
@@ -39,7 +38,7 @@ public:
 
 private:
   struct ValueType {
-    ValueType() {
+    ValueType() : data(nullptr) {
       uval = 0;
     }
 
@@ -48,27 +47,24 @@ private:
       int64_t sval;
       const char* cstr;
     };
-    const uint8_t* data = nullptr;
+    const uint8_t* data;
   };
 
   dwarf::Form Form; // Form for this value.
   ValueType Value; // Contains all data for the form.
-  const DWARFUnit *U = nullptr; // Remember the DWARFUnit at extract time.
+  const DWARFUnit *U; // Remember the DWARFUnit at extract time.
 
 public:
-  DWARFFormValue(dwarf::Form F = dwarf::Form(0)) : Form(F) {}
-
+  DWARFFormValue(dwarf::Form F = dwarf::Form(0)) : Form(F), U(nullptr) {}
   dwarf::Form getForm() const { return Form; }
   void setForm(dwarf::Form F) { Form = F; }
   void setUValue(uint64_t V) { Value.uval = V; }
   void setSValue(int64_t V) { Value.sval = V; }
   void setPValue(const char *V) { Value.cstr = V; }
-
   void setBlockValue(const ArrayRef<uint8_t> &Data) {
     Value.data = Data.data();
     setUValue(Data.size());
   }
-
   bool isFormClass(FormClass FC) const;
   const DWARFUnit *getUnit() const { return U; }
   void dump(raw_ostream &OS) const;
@@ -81,7 +77,6 @@ public:
   /// \returns whether the extraction succeeded.
   bool extractValue(const DataExtractor &Data, uint32_t *OffsetPtr,
                     const DWARFUnit *U);
-
   bool isInlinedCStr() const {
     return Value.data != nullptr && Value.data == (const uint8_t*)Value.cstr;
   }
@@ -97,7 +92,6 @@ public:
   Optional<ArrayRef<uint8_t>> getAsBlock() const;
   Optional<uint64_t> getAsCStringOffset() const;
   Optional<uint64_t> getAsReferenceUVal() const;
-
   /// Get the fixed byte size for a given form.
   ///
   /// If the form always has a fixed valid byte size that doesn't depend on a
@@ -116,7 +110,6 @@ public:
   /// and was needed to calculate the byte size.
   static Optional<uint8_t> getFixedByteSize(dwarf::Form Form,
                                             const DWARFUnit *U = nullptr);
-
   /// Get the fixed byte size for a given form.
   ///
   /// If the form has a fixed byte size given a valid DWARF version and address
@@ -145,7 +138,6 @@ public:
   /// \returns true on success, false if the form was not skipped.
   bool skipValue(DataExtractor debug_info_data, uint32_t *offset_ptr,
                  const DWARFUnit *U) const;
-
   /// Skip a form in \p debug_info_data at offset specified by \p offset_ptr.
   ///
   /// Skips the bytes for this form in the debug info and updates the offset.
@@ -158,7 +150,6 @@ public:
   /// \returns true on success, false if the form was not skipped.
   static bool skipValue(dwarf::Form form, DataExtractor debug_info_data,
                         uint32_t *offset_ptr, const DWARFUnit *U);
-
   /// Skip a form in \p debug_info_data at offset specified by \p offset_ptr.
   ///
   /// Skips the bytes for this form in the debug info and updates the offset.
@@ -179,7 +170,6 @@ private:
 };
 
 namespace dwarf {
-
   /// Take an optional DWARFFormValue and try to extract a string value from it.
   ///
   /// \param V and optional DWARFFormValue to attempt to extract the value from.
@@ -326,6 +316,6 @@ namespace dwarf {
 
 } // end namespace dwarf
 
-} // end namespace llvm
+}
 
-#endif // LLVM_DEBUGINFO_DWARFFORMVALUE_H
+#endif

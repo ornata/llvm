@@ -450,7 +450,7 @@ Error LLVMOutputStyle::dumpStreamBytes() {
     auto Blocks = File.getMsfLayout().StreamMap[SI];
     P.printList("Blocks", Blocks);
 
-    BinaryStreamReader R(*S);
+    StreamReader R(*S);
     ArrayRef<uint8_t> StreamData;
     if (auto EC = R.readBytes(StreamData, S->getLength()))
       return EC;
@@ -745,10 +745,10 @@ Error LLVMOutputStyle::dumpDbiStream() {
           public:
             RecordVisitor(ScopedPrinter &P, PDBFile &F) : P(P), F(F) {}
             Error visitUnknown(ModuleSubstreamKind Kind,
-                               BinaryStreamRef Stream) override {
+                               ReadableStreamRef Stream) override {
               DictScope DD(P, "Unknown");
               ArrayRef<uint8_t> Data;
-              BinaryStreamReader R(Stream);
+              StreamReader R(Stream);
               if (auto EC = R.readBytes(Data, R.bytesRemaining())) {
                 return make_error<RawError>(
                     raw_error_code::corrupt_file,
@@ -758,7 +758,7 @@ Error LLVMOutputStyle::dumpDbiStream() {
               return Error::success();
             }
             Error
-            visitFileChecksums(BinaryStreamRef Data,
+            visitFileChecksums(ReadableStreamRef Data,
                                const FileChecksumArray &Checksums) override {
               DictScope DD(P, "FileChecksums");
               for (const auto &C : Checksums) {
@@ -774,7 +774,7 @@ Error LLVMOutputStyle::dumpDbiStream() {
               return Error::success();
             }
 
-            Error visitLines(BinaryStreamRef Data,
+            Error visitLines(ReadableStreamRef Data,
                              const LineSubstreamHeader *Header,
                              const LineInfoArray &Lines) override {
               DictScope DD(P, "Lines");

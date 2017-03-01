@@ -1,4 +1,4 @@
-//===- Solution.h - PBQP Solution -------------------------------*- C++ -*-===//
+//===-- Solution.h ------- PBQP Solution ------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -14,8 +14,8 @@
 #ifndef LLVM_CODEGEN_PBQP_SOLUTION_H
 #define LLVM_CODEGEN_PBQP_SOLUTION_H
 
-#include "llvm/CodeGen/PBQP/Graph.h"
-#include <cassert>
+#include "Graph.h"
+#include "Math.h"
 #include <map>
 
 namespace llvm {
@@ -26,17 +26,17 @@ namespace PBQP {
   /// To get the selection for each node in the problem use the getSelection method.
   class Solution {
   private:
+
     typedef std::map<GraphBase::NodeId, unsigned> SelectionsMap;
     SelectionsMap selections;
 
-    unsigned r0Reductions = 0;
-    unsigned r1Reductions = 0;
-    unsigned r2Reductions = 0;
-    unsigned rNReductions = 0;
+    unsigned r0Reductions, r1Reductions, r2Reductions, rNReductions;
 
   public:
+
     /// \brief Initialise an empty solution.
-    Solution() = default;
+    Solution()
+      : r0Reductions(0), r1Reductions(0), r2Reductions(0), rNReductions(0) {}
 
     /// \brief Set the selection for a given node.
     /// @param nodeId Node id.
@@ -53,9 +53,10 @@ namespace PBQP {
       assert(sItr != selections.end() && "No selection for node.");
       return sItr->second;
     }
+
   };
 
-} // end namespace PBQP
-} // end namespace llvm
+} // namespace PBQP
+} // namespace llvm
 
 #endif // LLVM_CODEGEN_PBQP_SOLUTION_H

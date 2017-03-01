@@ -1,5 +1,3 @@
-XFAIL: darwin
-
 CHECK: COVERAGE:
 CHECK-DAG: COVERED: {{.*}}in LLVMFuzzerTestOneInput {{.*}}NullDerefTest.cpp:13
 CHECK-DAG: COVERED: {{.*}}in LLVMFuzzerTestOneInput {{.*}}NullDerefTest.cpp:14

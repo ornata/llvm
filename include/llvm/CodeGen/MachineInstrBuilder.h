@@ -1,4 +1,4 @@
-//===- CodeGen/MachineInstBuilder.h - Simplify creation of MIs --*- C++ -*-===//
+//===-- CodeGen/MachineInstBuilder.h - Simplify creation of MIs -*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -19,18 +19,9 @@
 #ifndef LLVM_CODEGEN_MACHINEINSTRBUILDER_H
 #define LLVM_CODEGEN_MACHINEINSTRBUILDER_H
 
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBundle.h"
-#include "llvm/CodeGen/MachineOperand.h"
-#include "llvm/IR/InstrTypes.h"
-#include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <cassert>
-#include <cstdint>
-#include <utility>
 
 namespace llvm {
 
@@ -38,7 +29,6 @@ class MCInstrDesc;
 class MDNode;
 
 namespace RegState {
-
   enum {
     Define         = 0x2,
     Implicit       = 0x4,
@@ -52,15 +42,13 @@ namespace RegState {
     ImplicitDefine = Implicit | Define,
     ImplicitKill   = Implicit | Kill
   };
-
-} // end namespace RegState
+}
 
 class MachineInstrBuilder {
-  MachineFunction *MF = nullptr;
-  MachineInstr *MI = nullptr;
-
+  MachineFunction *MF;
+  MachineInstr *MI;
 public:
-  MachineInstrBuilder() = default;
+  MachineInstrBuilder() : MF(nullptr), MI(nullptr) {}
 
   /// Create a MachineInstrBuilder for manipulating an existing instruction.
   /// F must be the machine function that was used to allocate I.
@@ -530,6 +518,6 @@ public:
   }
 };
 
-} // end namespace llvm
+} // End llvm namespace
 
-#endif // LLVM_CODEGEN_MACHINEINSTRBUILDER_H
+#endif

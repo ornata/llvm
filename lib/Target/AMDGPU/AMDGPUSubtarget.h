@@ -276,10 +276,6 @@ public:
     return (getGeneration() >= EVERGREEN);
   }
 
-  bool hasMed3_16() const {
-    return getGeneration() >= GFX9;
-  }
-
   bool hasCARRY() const {
     return (getGeneration() >= EVERGREEN);
   }

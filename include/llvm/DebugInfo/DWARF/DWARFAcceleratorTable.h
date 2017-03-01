@@ -1,4 +1,4 @@
-//===- DWARFAcceleratorTable.h ----------------------------------*- C++ -*-===//
+//===--- DWARFAcceleratorTable.h --------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,21 +7,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_DWARFACCELERATORTABLE_H
-#define LLVM_DEBUGINFO_DWARFACCELERATORTABLE_H
+#ifndef LLVM_LIB_DEBUGINFO_DWARFACCELERATORTABLE_H
+#define LLVM_LIB_DEBUGINFO_DWARFACCELERATORTABLE_H
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/DebugInfo/DWARF/DWARFFormValue.h"
 #include "llvm/DebugInfo/DWARF/DWARFRelocMap.h"
-#include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Dwarf.h"
 #include <cstdint>
-#include <utility>
 
 namespace llvm {
 
-class raw_ostream;
-
 class DWARFAcceleratorTable {
+
   struct Header {
     uint32_t Magic;
     uint16_t Version;
@@ -43,7 +41,6 @@ class DWARFAcceleratorTable {
   DataExtractor AccelSection;
   DataExtractor StringSection;
   const RelocAddrMap& Relocs;
-
 public:
   DWARFAcceleratorTable(DataExtractor AccelSection, DataExtractor StringSection,
                         const RelocAddrMap &Relocs)
@@ -53,6 +50,6 @@ public:
   void dump(raw_ostream &OS) const;
 };
 
-} // end namespace llvm
+}
 
-#endif // LLVM_DEBUGINFO_DWARFACCELERATORTABLE_H
+#endif

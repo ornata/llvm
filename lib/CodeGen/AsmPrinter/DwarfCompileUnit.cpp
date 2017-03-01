@@ -1,16 +1,3 @@
-//===-- llvm/CodeGen/DwarfCompileUnit.cpp - Dwarf Compile Units -----------===//
-//
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
-//
-//===----------------------------------------------------------------------===//
-//
-// This file contains support for constructing a dwarf compile unit.
-//
-//===----------------------------------------------------------------------===//
-
 #include "DwarfCompileUnit.h"
 #include "DwarfExpression.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -703,10 +690,7 @@ void DwarfCompileUnit::emitHeader(bool UseOffsets) {
     Asm->OutStreamer->EmitLabel(LabelBegin);
   }
 
-  dwarf::UnitType UT = Skeleton ? dwarf::DW_UT_split_compile
-                                : DD->useSplitDwarf() ? dwarf::DW_UT_skeleton
-                                                      : dwarf::DW_UT_compile;
-  DwarfUnit::emitCommonHeader(UseOffsets, UT);
+  DwarfUnit::emitHeader(UseOffsets);
 }
 
 /// addGlobalName - Add a new global name to the compile unit.

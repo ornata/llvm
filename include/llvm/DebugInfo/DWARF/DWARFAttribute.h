@@ -1,4 +1,4 @@
-//===- DWARFAttribute.h -----------------------------------------*- C++ -*-===//
+//===-- DWARFAttribute.h ----------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,12 +7,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_DWARFATTRIBUTE_H
-#define LLVM_DEBUGINFO_DWARFATTRIBUTE_H
+#ifndef LLVM_LIB_DEBUGINFO_DWARFATTRIBUTE_H
+#define LLVM_LIB_DEBUGINFO_DWARFATTRIBUTE_H
 
-#include "llvm/DebugInfo/DWARF/DWARFFormValue.h"
 #include "llvm/Support/Dwarf.h"
-#include <cstdint>
+#include "llvm/DebugInfo/DWARF/DWARFFormValue.h"
 
 namespace llvm {
 
@@ -24,16 +23,17 @@ namespace llvm {
 /// attributes in a DWARFDie.
 struct DWARFAttribute {
   /// The debug info/types offset for this attribute.
-  uint32_t Offset = 0;
+  uint32_t Offset;
   /// The debug info/types section byte size of the data for this attribute.
-  uint32_t ByteSize = 0;
+  uint32_t ByteSize;
   /// The attribute enumeration of this attribute.
   dwarf::Attribute Attr;
   /// The form and value for this attribute.
   DWARFFormValue Value;
   
   DWARFAttribute(uint32_t O, dwarf::Attribute A = dwarf::Attribute(0),
-                 dwarf::Form F = dwarf::Form(0)) : Attr(A), Value(F) {}
+                 dwarf::Form F = dwarf::Form(0)) :
+      Offset(0), ByteSize(0), Attr(A), Value(F) {}
   
   bool isValid() const {
     return Offset != 0 && Attr != dwarf::Attribute(0);
@@ -51,6 +51,6 @@ struct DWARFAttribute {
   }
 };
 
-} // end namespace llvm
+}
 
-#endif // LLVM_DEBUGINFO_DWARFATTRIBUTE_H
+#endif

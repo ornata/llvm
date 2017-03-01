@@ -5,14 +5,15 @@ from __future__ import print_function
 desc = '''Generate HTML output to visualize optimization records from the YAML files
 generated with -fsave-optimization-record and -fdiagnostics-show-hotness.
 
-The tools requires PyYAML and Pygments Python packages.'''
+The tools requires PyYAML and Pygments Python packages.
+
+For faster parsing, you may want to use libYAML with PyYAML.'''
 
 import yaml
 # Try to use the C parser.
 try:
     from yaml import CLoader as Loader
 except ImportError:
-    print("For faster parsing, you may want to install libYAML for PyYAML")
     from yaml import Loader
 
 import functools
@@ -216,7 +217,7 @@ class SourceFileRenderer:
 
         # Column is the number of characters *including* tabs, keep those and
         # replace everything else with spaces.
-        indent = line[:max(r.Column, 1) - 1]
+        indent = line[:r.Column - 1]
         indent = re.sub('\S', ' ', indent)
 
         print('''

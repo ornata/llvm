@@ -279,13 +279,11 @@ public:
   virtual unsigned getHeaderSize() const {
     return sizeof(int16_t) + // DWARF version number
            sizeof(int32_t) + // Offset Into Abbrev. Section
-           sizeof(int8_t) +  // Pointer Size (in bytes)
-           (DD->getDwarfVersion() >= 5 ? sizeof(int8_t)
-                                       : 0); // DWARF v5 unit type
+           sizeof(int8_t);   // Pointer Size (in bytes)
   }
 
   /// Emit the header for this unit, not including the initial length field.
-  virtual void emitHeader(bool UseOffsets) = 0;
+  virtual void emitHeader(bool UseOffsets);
 
   virtual DwarfCompileUnit &getCU() = 0;
 
@@ -309,9 +307,6 @@ protected:
   /// the accelerator tables.
   void updateAcceleratorTables(const DIScope *Context, const DIType *Ty,
                                const DIE &TyDIE);
-
-  /// Emit the common part of the header for this unit.
-  void emitCommonHeader(bool UseOffsets, dwarf::UnitType UT);
 
 private:
   void constructTypeDIE(DIE &Buffer, const DIBasicType *BTy);

@@ -1911,14 +1911,20 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
     return;
   }
 
-  CallInst *NewCall = nullptr;
+  std::string Name = CI->getName();
+  if (!Name.empty())
+    CI->setName(Name + ".old");
+
   switch (NewFn->getIntrinsicID()) {
   default: {
     // Handle generic mangling change, but nothing else
     assert(
         (CI->getCalledFunction()->getName() != NewFn->getName()) &&
         "Unknown function for CallInst upgrade and isn't just a name change");
-    CI->setCalledFunction(NewFn);
+    SmallVector<Value *, 4> Args(CI->arg_operands().begin(),
+                                 CI->arg_operands().end());
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, Args));
+    CI->eraseFromParent();
     return;
   }
 
@@ -1938,39 +1944,47 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
   case Intrinsic::arm_neon_vst4lane: {
     SmallVector<Value *, 4> Args(CI->arg_operands().begin(),
                                  CI->arg_operands().end());
-    NewCall = Builder.CreateCall(NewFn, Args);
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, Args));
+    CI->eraseFromParent();
+    return;
   }
 
   case Intrinsic::bitreverse:
-    NewCall = Builder.CreateCall(NewFn, {CI->getArgOperand(0)});
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, {CI->getArgOperand(0)}));
+    CI->eraseFromParent();
+    return;
 
   case Intrinsic::ctlz:
   case Intrinsic::cttz:
     assert(CI->getNumArgOperands() == 1 &&
            "Mismatch between function args and call args");
-    NewCall =
-        Builder.CreateCall(NewFn, {CI->getArgOperand(0), Builder.getFalse()});
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(
+        NewFn, {CI->getArgOperand(0), Builder.getFalse()}, Name));
+    CI->eraseFromParent();
+    return;
 
   case Intrinsic::objectsize:
-    NewCall =
-        Builder.CreateCall(NewFn, {CI->getArgOperand(0), CI->getArgOperand(1)});
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(
+        NewFn, {CI->getArgOperand(0), CI->getArgOperand(1)}, Name));
+    CI->eraseFromParent();
+    return;
 
   case Intrinsic::ctpop:
-    NewCall = Builder.CreateCall(NewFn, {CI->getArgOperand(0)});
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, {CI->getArgOperand(0)}));
+    CI->eraseFromParent();
+    return;
 
   case Intrinsic::convert_from_fp16:
-    NewCall = Builder.CreateCall(NewFn, {CI->getArgOperand(0)});
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, {CI->getArgOperand(0)}));
+    CI->eraseFromParent();
+    return;
 
   case Intrinsic::x86_xop_vfrcz_ss:
   case Intrinsic::x86_xop_vfrcz_sd:
-    NewCall = Builder.CreateCall(NewFn, {CI->getArgOperand(1)});
-    break;
+    CI->replaceAllUsesWith(
+        Builder.CreateCall(NewFn, {CI->getArgOperand(1)}, Name));
+    CI->eraseFromParent();
+    return;
 
   case Intrinsic::x86_xop_vpermil2pd:
   case Intrinsic::x86_xop_vpermil2ps:
@@ -1981,8 +1995,9 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
     VectorType *FltIdxTy = cast<VectorType>(Args[2]->getType());
     VectorType *IntIdxTy = VectorType::getInteger(FltIdxTy);
     Args[2] = Builder.CreateBitCast(Args[2], IntIdxTy);
-    NewCall = Builder.CreateCall(NewFn, Args);
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, Args, Name));
+    CI->eraseFromParent();
+    return;
   }
 
   case Intrinsic::x86_sse41_ptestc:
@@ -2004,8 +2019,10 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
     Value *BC0 = Builder.CreateBitCast(Arg0, NewVecTy, "cast");
     Value *BC1 = Builder.CreateBitCast(Arg1, NewVecTy, "cast");
 
-    NewCall = Builder.CreateCall(NewFn, {BC0, BC1});
-    break;
+    CallInst *NewCall = Builder.CreateCall(NewFn, {BC0, BC1}, Name);
+    CI->replaceAllUsesWith(NewCall);
+    CI->eraseFromParent();
+    return;
   }
 
   case Intrinsic::x86_sse41_insertps:
@@ -2021,13 +2038,17 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
 
     // Replace the last argument with a trunc.
     Args.back() = Builder.CreateTrunc(Args.back(), Type::getInt8Ty(C), "trunc");
-    NewCall = Builder.CreateCall(NewFn, Args);
-    break;
+
+    CallInst *NewCall = Builder.CreateCall(NewFn, Args);
+    CI->replaceAllUsesWith(NewCall);
+    CI->eraseFromParent();
+    return;
   }
 
   case Intrinsic::thread_pointer: {
-    NewCall = Builder.CreateCall(NewFn, {});
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, {}));
+    CI->eraseFromParent();
+    return;
   }
 
   case Intrinsic::invariant_start:
@@ -2036,19 +2057,11 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
   case Intrinsic::masked_store: {
     SmallVector<Value *, 4> Args(CI->arg_operands().begin(),
                                  CI->arg_operands().end());
-    NewCall = Builder.CreateCall(NewFn, Args);
-    break;
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, Args));
+    CI->eraseFromParent();
+    return;
   }
   }
-  assert(NewCall && "Should have either set this variable or returned through "
-                    "the default case");
-  std::string Name = CI->getName();
-  if (!Name.empty()) {
-    CI->setName(Name + ".old");
-    NewCall->setName(Name);
-  }
-  CI->replaceAllUsesWith(NewCall);
-  CI->eraseFromParent();
 }
 
 void llvm::UpgradeCallsToIntrinsic(Function *F) {

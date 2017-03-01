@@ -1,4 +1,4 @@
-//===- DWARFDebugAbbrev.h ---------------------------------------*- C++ -*-===//
+//===-- DWARFDebugAbbrev.h --------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,12 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_DWARFDEBUGABBREV_H
-#define LLVM_DEBUGINFO_DWARFDEBUGABBREV_H
+#ifndef LLVM_LIB_DEBUGINFO_DWARFDEBUGABBREV_H
+#define LLVM_LIB_DEBUGINFO_DWARFDEBUGABBREV_H
 
 #include "llvm/DebugInfo/DWARF/DWARFAbbreviationDeclaration.h"
-#include "llvm/Support/DataExtractor.h"
-#include <cstdint>
 #include <map>
 #include <vector>
 
@@ -78,6 +76,6 @@ private:
   void clear();
 };
 
-} // end namespace llvm
+}
 
-#endif // LLVM_DEBUGINFO_DWARFDEBUGABBREV_H
+#endif

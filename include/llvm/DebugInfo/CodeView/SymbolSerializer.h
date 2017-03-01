@@ -12,24 +12,23 @@
 
 #include "llvm/DebugInfo/CodeView/SymbolRecordMapping.h"
 #include "llvm/DebugInfo/CodeView/SymbolVisitorCallbacks.h"
+#include "llvm/DebugInfo/MSF/BinaryByteStream.h"
+#include "llvm/DebugInfo/MSF/BinaryStreamWriter.h"
 
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator_range.h"
-#include "llvm/DebugInfo/MSF/BinaryByteStream.h"
-#include "llvm/DebugInfo/MSF/BinaryStreamWriter.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Error.h"
 
 namespace llvm {
-class BinaryStreamWriter;
 namespace codeview {
 
 class SymbolSerializer : public SymbolVisitorCallbacks {
   uint32_t RecordStart = 0;
-  BinaryStreamWriter &Writer;
+  msf::StreamWriter &Writer;
   SymbolRecordMapping Mapping;
   Optional<SymbolKind> CurrentSymbol;
 
@@ -43,7 +42,7 @@ class SymbolSerializer : public SymbolVisitorCallbacks {
   }
 
 public:
-  explicit SymbolSerializer(BinaryStreamWriter &Writer)
+  explicit SymbolSerializer(msf::StreamWriter &Writer)
       : Writer(Writer), Mapping(Writer) {}
 
   virtual Error visitSymbolBegin(CVSymbol &Record) override {
