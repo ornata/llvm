@@ -76,7 +76,6 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/DebugCounter.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVNExpression.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -104,8 +103,7 @@ STATISTIC(NumGVNAvoidedSortedLeaderChanges,
 STATISTIC(NumGVNNotMostDominatingLeader,
           "Number of times a member dominated it's new classes' leader");
 STATISTIC(NumGVNDeadStores, "Number of redundant/dead stores eliminated");
-DEBUG_COUNTER(VNCounter, "newgvn-vn",
-              "Controls which instructions are value numbered")
+
 //===----------------------------------------------------------------------===//
 //                                GVN Pass
 //===----------------------------------------------------------------------===//
@@ -289,8 +287,6 @@ class NewGVN : public FunctionPass {
   // Deletion info.
   SmallPtrSet<Instruction *, 8> InstructionsToErase;
 
-  // The set of things we gave unknown expressions to due to debug counting.
-  SmallPtrSet<Instruction *, 8> DebugUnknownExprs;
 public:
   static char ID; // Pass identification, replacement for typeid.
   NewGVN() : FunctionPass(ID) {
@@ -1712,13 +1708,13 @@ void NewGVN::cleanupTables() {
 #endif
   InstrDFS.clear();
   InstructionsToErase.clear();
+
   DFSToInstr.clear();
   BlockInstRange.clear();
   TouchedInstructions.clear();
   DominatedInstRange.clear();
   MemoryAccessToClass.clear();
   PredicateToUsers.clear();
-  DebugUnknownExprs.clear();
 }
 
 std::pair<unsigned, unsigned> NewGVN::assignDFSNumbers(BasicBlock *B,
@@ -1800,6 +1796,7 @@ void NewGVN::valueNumberMemoryPhi(MemoryPhi *MP) {
 // congruence finding, and updating mappings.
 void NewGVN::valueNumberInstruction(Instruction *I) {
   DEBUG(dbgs() << "Processing instruction " << *I << "\n");
+
   // There's no need to call isInstructionTriviallyDead more than once on
   // an instruction. Therefore, once we know that an instruction is dead
   // we change its DFS number so that it doesn't get numbered again.
@@ -1810,14 +1807,7 @@ void NewGVN::valueNumberInstruction(Instruction *I) {
     return;
   }
   if (!I->isTerminator()) {
-    const Expression *Symbolized = nullptr;
-    if (DebugCounter::shouldExecute(VNCounter)) {
-      Symbolized = performSymbolicEvaluation(I);
-    } else {
-      // Used to track which we marked unknown so we can skip verification of
-      // comparisons.
-      DebugUnknownExprs.insert(I);
-    }
+    const auto *Symbolized = performSymbolicEvaluation(I);
     // If we couldn't come up with a symbolic expression, use the unknown
     // expression
     if (Symbolized == nullptr)
@@ -1933,7 +1923,7 @@ void NewGVN::verifyComparisons(Function &F) {
     if (!ReachableBlocks.count(&BB))
       continue;
     for (auto &I : BB) {
-      if (InstructionsToErase.count(&I) || DebugUnknownExprs.count(&I))
+      if (InstructionsToErase.count(&I))
         continue;
       if (isa<CmpInst>(&I)) {
         auto *CurrentVal = ValueToClass.lookup(&I);

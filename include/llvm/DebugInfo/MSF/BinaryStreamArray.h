@@ -243,7 +243,6 @@ public:
       // an exact multiple of the element size.
       consumeError(std::move(EC));
     }
-    assert(llvm::alignmentAdjustment(Data.data(), alignof(T)) == 0);
     return *reinterpret_cast<const T *>(Data.data());
   }
 

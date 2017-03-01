@@ -208,16 +208,7 @@ bool HexagonOptAddrMode::allValidCandidates(NodeAddr<StmtNode *> SA,
     NodeAddr<UseNode *> UN = *I;
     RegisterRef UR = UN.Addr->getRegRef(*DFG);
     NodeSet Visited, Defs;
-    const auto &P = LV->getAllReachingDefsRec(UR, UN, Visited, Defs);
-    if (!P.second) {
-      DEBUG({
-        dbgs() << "*** Unable to collect all reaching defs for use ***\n"
-               << PrintNode<UseNode*>(UN, *DFG) << '\n'
-               << "The program's complexity may exceed the limits.\n";
-      });
-      return false;
-    }
-    const auto &ReachingDefs = P.first;
+    const auto &ReachingDefs = LV->getAllReachingDefsRec(UR, UN, Visited, Defs);
     if (ReachingDefs.size() > 1) {
       DEBUG({
         dbgs() << "*** Multiple Reaching Defs found!!! ***\n";
