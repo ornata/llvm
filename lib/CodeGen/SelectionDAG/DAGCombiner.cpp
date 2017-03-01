@@ -129,6 +129,9 @@ namespace {
     /// Add to the worklist making sure its instance is at the back (next to be
     /// processed.)
     void AddToWorklist(SDNode *N) {
+      assert(N->getOpcode() != ISD::DELETED_NODE &&
+             "Deleted Node added to Worklist");
+
       // Skip handle nodes as they can't usefully be combined and confuse the
       // zero-use deletion strategy.
       if (N->getOpcode() == ISD::HANDLENODE)
@@ -4506,6 +4509,8 @@ const Optional<ByteProvider> calculateByteProvider(SDValue Op, unsigned Index,
                : calculateByteProvider(Op->getOperand(0), Index - ByteShift,
                                        Depth + 1);
   }
+  case ISD::ANY_EXTEND:
+  case ISD::SIGN_EXTEND:
   case ISD::ZERO_EXTEND: {
     SDValue NarrowOp = Op->getOperand(0);
     unsigned NarrowBitWidth = NarrowOp.getScalarValueSizeInBits();
@@ -4513,22 +4518,32 @@ const Optional<ByteProvider> calculateByteProvider(SDValue Op, unsigned Index,
       return None;
     uint64_t NarrowByteWidth = NarrowBitWidth / 8;
 
-    return Index >= NarrowByteWidth
-               ? ByteProvider::getConstantZero()
-               : calculateByteProvider(NarrowOp, Index, Depth + 1);
+    if (Index >= NarrowByteWidth)
+      return Op.getOpcode() == ISD::ZERO_EXTEND
+                 ? Optional<ByteProvider>(ByteProvider::getConstantZero())
+                 : None;
+    else
+      return calculateByteProvider(NarrowOp, Index, Depth + 1);
   }
   case ISD::BSWAP:
     return calculateByteProvider(Op->getOperand(0), ByteWidth - Index - 1,
                                  Depth + 1);
   case ISD::LOAD: {
     auto L = cast<LoadSDNode>(Op.getNode());
-
-    // TODO: support ext loads
-    if (L->isVolatile() || L->isIndexed() ||
-        L->getExtensionType() != ISD::NON_EXTLOAD)
+    if (L->isVolatile() || L->isIndexed())
       return None;
 
-    return ByteProvider::getMemory(L, Index);
+    unsigned NarrowBitWidth = L->getMemoryVT().getSizeInBits();
+    if (NarrowBitWidth % 8 != 0)
+      return None;
+    uint64_t NarrowByteWidth = NarrowBitWidth / 8;
+
+    if (Index >= NarrowByteWidth)
+      return L->getExtensionType() == ISD::ZEXTLOAD
+                 ? Optional<ByteProvider>(ByteProvider::getConstantZero())
+                 : None;
+    else
+      return ByteProvider::getMemory(L, Index);
   }
   }
 
@@ -4617,7 +4632,6 @@ SDValue DAGCombiner::MatchLoadCombine(SDNode *N) {
 
     LoadSDNode *L = P->Load;
     assert(L->hasNUsesOfValue(1, 0) && !L->isVolatile() && !L->isIndexed() &&
-           (L->getExtensionType() == ISD::NON_EXTLOAD) &&
            "Must be enforced by calculateByteProvider");
     assert(L->getOffset().isUndef() && "Unindexed load must have undef offset");
 
@@ -12608,10 +12622,13 @@ SDValue DAGCombiner::visitSTORE(SDNode *N) {
             Value,
             APInt::getLowBitsSet(Value.getScalarValueSizeInBits(),
                                  ST->getMemoryVT().getScalarSizeInBits()))) {
-      // Re-visit the store if anything changed; SimplifyDemandedBits
-      // will add Value's node back to the worklist if necessary, but
-      // we also need to re-visit the Store node itself.
-      AddToWorklist(N);
+      // Re-visit the store if anything changed and the store hasn't
+      // been merged with another node (N is deleted);
+      // SimplifyDemandedBits will add Value's node back to the
+      // worklist if necessary, but we also need to re-visit the Store
+      // node itself.
+      if (N->getOpcode() != ISD::DELETED_NODE)
+        AddToWorklist(N);
       return SDValue(N, 0);
     }
   }
