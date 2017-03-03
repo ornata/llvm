@@ -1523,7 +1523,7 @@ public:
   /// \p Invisible instructions are instructions which can be outlined, but
   /// shouldn't actually impact the outlining result.
   /// \p TailCall instructions can be outlined, and their sequences are outlined
-  //  as tail calls.
+  /// as tail calls.
   enum MachineOutlinerInstrType {Legal, Illegal, Invisible, TailCall};
 
   /// Return true if the instruction is legal to outline.
