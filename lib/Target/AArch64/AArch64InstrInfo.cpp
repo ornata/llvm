@@ -4215,3 +4215,98 @@ AArch64InstrInfo::getSerializableBitmaskMachineOperandTargetFlags() const {
       {MO_TLS, "aarch64-tls"}};
   return makeArrayRef(TargetFlags);
 }
+
+unsigned AArch64InstrInfo::getOutliningBenefit(size_t SequenceSize,
+                                               size_t Occurrences) const {
+  unsigned NotOutlinedSize = SequenceSize * Occurrences;
+  unsigned OutlinedSize;
+
+  // Sequence appears once, including the return
+  // Each occurrence is replaced with a branch to the outlined function.
+  OutlinedSize = SequenceSize + Occurrences;
+
+  // Return the number of instructions saved by outlining this sequence.
+  return NotOutlinedSize > OutlinedSize ? NotOutlinedSize - OutlinedSize : 0;
+}
+
+bool AArch64InstrInfo::isFunctionSafeToOutlineFrom(MachineFunction &MF) const {
+  return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
+}
+
+AArch64GenInstrInfo::MachineOutlinerInstrType
+AArch64InstrInfo::getOutliningType(MachineInstr &MI) const {
+
+  // Don't outline returns or basic block terminators.
+  if (MI.isReturn() || MI.isTerminator())
+    return MachineOutlinerInstrType::Illegal;
+
+  if (MI.isPosition())
+    return MachineOutlinerInstrType::Illegal;
+
+  for (const MachineOperand &MOP : MI.operands())
+    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || MOP.isFI() ||
+        MOP.isTargetIndex())
+      return MachineOutlinerInstrType::Illegal;
+
+  if (MI.modifiesRegister(AArch64::LR, &RI) ||
+      MI.readsRegister(AArch64::LR, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::LR) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::LR)) {
+
+    // Don't allow loads from LR.
+    if (MI.mayLoadOrStore())
+      return MachineOutlinerInstrType::Illegal;
+  }
+
+  if (MI.modifiesRegister(AArch64::SP, &RI) ||
+      MI.readsRegister(AArch64::SP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP))
+    return MachineOutlinerInstrType::Illegal;
+
+  // Don't allow debug values to impact outlining type.
+  if (MI.isDebugValue())
+    return MachineOutlinerInstrType::Invisible;
+
+  return MachineOutlinerInstrType::Legal;
+}
+
+void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                                              MachineFunction &MF) const {
+
+  MachineInstr *ret = BuildMI(MF, DebugLoc(), get(AArch64::RET))
+                          .addReg(AArch64::LR, RegState::Undef);
+  MBB.insert(MBB.end(), ret);
+}
+
+void AArch64InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,
+                                              MachineFunction &MF) const {}
+
+MachineBasicBlock::iterator AArch64InstrInfo::insertOutlinedCall(
+    Module &M, MachineBasicBlock &MBB, MachineBasicBlock::iterator &It,
+    MachineFunction &MF) const {
+
+  MachineInstr *STRXpre = BuildMI(MF, DebugLoc(), get(AArch64::STRXpre))
+                              .addReg(AArch64::SP, RegState::Define)
+                              .addReg(AArch64::LR)
+                              .addReg(AArch64::SP)
+                              .addImm(-16);
+  It = MBB.insert(It, STRXpre);
+  It++;
+
+  It = MBB.insert(It,
+                  BuildMI(MF, DebugLoc(), get(AArch64::BL))
+                      .addGlobalAddress(M.getNamedValue(MF.getName())));
+
+  It++;
+
+  // Restore the link register.
+  MachineInstr *LDRXpost = BuildMI(MF, DebugLoc(), get(AArch64::LDRXpost))
+                               .addReg(AArch64::SP, RegState::Define)
+                               .addReg(AArch64::LR)
+                               .addReg(AArch64::SP)
+                               .addImm(16);
+  It = MBB.insert(It, LDRXpost);
+
+  return It;
+}
