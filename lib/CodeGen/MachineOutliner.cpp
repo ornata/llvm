@@ -936,6 +936,7 @@ struct InstructionMapper {
           break;
 
         case TargetInstrInfo::MachineOutlinerInstrType::Legal:
+        case TargetInstrInfo::MachineOutlinerInstrType::StackFixup:
           mapToLegalUnsigned(It);
           break;
 

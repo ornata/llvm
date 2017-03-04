@@ -10409,6 +10409,27 @@ bool X86InstrInfo::isFunctionSafeToOutlineFrom(MachineFunction &MF) const {
   return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
 }
 
+X86InstrInfo::MachineOutlinerFixupType
+X86InstrInfo::getPostOutliningFixup(MachineInstr &MI) const {
+  if (!isFrameStoreOpcode(MI.getOpcode()) && !isFrameLoadOpcode(MI.getOpcode()))
+    return MachineOutlinerFixupType::NotFixable;
+
+  switch (MI.getOpcode()) {
+    case X86::MOV64mr:
+      return MI.getOperand(0).getReg() == X86::RSP ?
+                                          MachineOutlinerFixupType::FixOp0 :
+                                          MachineOutlinerFixupType::NotFixable;
+    case X86::MOV64rm:
+      return MI.getOperand(5).getReg() == X86::RSP ?
+                                          MachineOutlinerFixupType::FixOp5 :
+                                          MachineOutlinerFixupType::NotFixable;
+    default:
+      break;
+  }
+
+  return MachineOutlinerFixupType::NotFixable;
+}
+
 X86GenInstrInfo::MachineOutlinerInstrType
 X86InstrInfo::getOutliningType(MachineInstr &MI) const {
 
@@ -10431,20 +10452,6 @@ X86InstrInfo::getOutliningType(MachineInstr &MI) const {
     return MachineOutlinerInstrType::Illegal;
   }
 
-  // Don't outline anything that modifies or reads from the stack pointer.
-  //
-  // FIXME: There are instructions which are being manually built without
-  // explicit uses/defs so we also have to check the MCInstrDesc. We should be
-  // able to remove the extra checks once those are fixed up. For example,
-  // sometimes we might get something like %RAX<def> = POP64r 1. This won't be
-  // caught by modifiesRegister or readsRegister even though the instruction
-  // really ought to be formed so that modifiesRegister/readsRegister would
-  // catch it.
-  if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI) ||
-      MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
-      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP)) 
-    return MachineOutlinerInstrType::Illegal;
-
   // Outlined calls change the instruction pointer, so don't read from it.
   if (MI.readsRegister(X86::RIP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RIP) ||
@@ -10461,13 +10468,38 @@ X86InstrInfo::getOutliningType(MachineInstr &MI) const {
         MOP.isTargetIndex())
       return MachineOutlinerInstrType::Illegal;
 
+  // Don't outline anything that modifies or reads from the stack pointer,
+  // unless we can fix it up afterwards.
+  //
+  // FIXME: There are instructions which are being manually built without
+  // explicit uses/defs so we also have to check the MCInstrDesc. We should be
+  // able to remove the extra checks once those are fixed up. For example,
+  // sometimes we might get something like %RAX<def> = POP64r 1. This won't be
+  // caught by modifiesRegister or readsRegister even though the instruction
+  // really ought to be formed so that modifiesRegister/readsRegister would
+  // catch it.
+  if (MI.modifiesRegister(X86::RSP, &RI) ||
+      MI.readsRegister(X86::RSP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP)) {
+
+      // Can we transform this instruction post-outlining so that it will be
+      // valid?
+      if (getPostOutliningFixup(MI) != MachineOutlinerFixupType::NotFixable) {
+        // Yes, so return that we can do so.
+        return MachineOutlinerInstrType::StackFixup;
+      } else {
+        // No, so return that it's illegal.
+        return MachineOutlinerInstrType::Illegal;
+      }
+  }
+
   return MachineOutlinerInstrType::Legal;
 }
 
 void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                                           MachineFunction &MF,
                                           bool IsTailCall) const {
-
   // If we're a tail call, we already have a return, so don't do anything.
   if (IsTailCall)
     return;
@@ -10476,6 +10508,33 @@ void X86InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
   // Add it in.
   MachineInstr *retq = BuildMI(MF, DebugLoc(), get(X86::RETQ));
   MBB.insert(MBB.end(), retq);
+
+  // Perform any necessary fixups on the outlined function.
+  fixupPostOutline(MF);
+}
+
+void X86InstrInfo::fixupPostOutline(MachineFunction &MF) const {
+  for (MachineBasicBlock &MBB: MF) {
+    // If any instruction is something we promised we could fix, fix it.
+    for (MachineInstr &MI: MBB) {
+      switch(getPostOutliningFixup(MI)) {
+        case MachineOutlinerFixupType::NotFixable:
+          break;
+        case MachineOutlinerFixupType::FixOp0 : {
+          auto &Disp = MI.getOperand(X86::AddrDisp);
+          int64_t oldDispVal = Disp.getImm();
+          Disp.setImm(oldDispVal + 8);
+          break;
+        }
+        case MachineOutlinerFixupType::FixOp5: {
+          auto &Disp = MI.getOperand(5 + X86::AddrDisp);
+          int64_t oldDispVal = Disp.getImm();
+          Disp.setImm(oldDispVal + 8);
+          break;
+        }
+      }
+    }
+  }
 }
 
 void X86InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,

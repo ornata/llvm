@@ -1524,7 +1524,7 @@ public:
   /// shouldn't actually impact the outlining result.
   /// \p TailCall instructions can be outlined, and their sequences are outlined
   /// as tail calls.
-  enum MachineOutlinerInstrType {Legal, Illegal, Invisible, TailCall};
+  enum MachineOutlinerInstrType {Legal, Illegal, Invisible, TailCall, StackFixup};
 
   /// Return true if the instruction is legal to outline.
   virtual MachineOutlinerInstrType getOutliningType(MachineInstr &MI) const {
