@@ -16,6 +16,7 @@
 
 #include "AArch64.h"
 #include "AArch64RegisterInfo.h"
+#include "AArch64MachineFunctionInfo.h"
 #include "llvm/CodeGen/MachineCombinerPattern.h"
 #include "llvm/Target/TargetInstrInfo.h"
 
@@ -243,6 +244,32 @@ public:
   getSerializableDirectMachineOperandTargetFlags() const override;
   ArrayRef<std::pair<unsigned, const char *>>
   getSerializableBitmaskMachineOperandTargetFlags() const override;
+
+  bool isFunctionSafeToOutlineFrom(MachineFunction &MF) const override;
+
+  unsigned getOutliningBenefit(size_t SequenceSize, size_t Occurrences, bool CanBeTailCall) const override;
+
+  int getPostOutliningFixup(MachineInstr &MI) const;
+
+  llvm::AArch64GenInstrInfo::MachineOutlinerInstrType
+  getOutliningType(MachineInstr &MI) const override;
+
+  void fixupPostOutline(MachineFunction &MF) const;
+
+  void insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                              MachineFunction &MF,
+                              bool IsTailCall) const override;
+
+  void insertOutlinerPrologue(MachineBasicBlock &MBB,
+                              MachineFunction &MF,
+                              bool isTailCall) const override;
+
+  MachineBasicBlock::iterator
+  insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
+                     MachineBasicBlock::iterator &It,
+                     MachineFunction &MF,
+                     bool IsTailCall) const override;
+
 
 private:
   void instantiateCondBranch(MachineBasicBlock &MBB, const DebugLoc &DL,
