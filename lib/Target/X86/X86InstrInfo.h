@@ -553,8 +553,6 @@ public:
   llvm::X86GenInstrInfo::MachineOutlinerInstrType
   getOutliningType(MachineInstr &MI) const override;
 
-  bool isFixablePostOutline(MachineInstr &MI) const;
-
   void insertOutlinerEpilogue(MachineBasicBlock &MBB,
                               MachineFunction &MF) const override;
 

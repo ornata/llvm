@@ -316,25 +316,25 @@ private:
   /// \param[in] CurrNode The node currently being visited.
   /// \param CurrIdx The current index of the string being visited.
   void setSuffixIndices(SuffixTreeNode &CurrNode, size_t CurrIdx) {
+
     bool IsLeaf = CurrNode.Children.size() == 0 && !CurrNode.isRoot();
+
+    // Traverse the tree depth-first.
+    for (auto &ChildPair : CurrNode.Children) {
+      assert(ChildPair.second && "Node had a null child!");
+      setSuffixIndices(*ChildPair.second,
+                       CurrIdx + ChildPair.second->size());
+    }
 
     // Is this node a leaf?
     if (IsLeaf) {
-
       // If yes, give it a suffix index and bump its parent's occurrence count.
       CurrNode.SuffixIdx = Str.size() - CurrIdx;
       assert(CurrNode.Parent && "CurrNode had no parent!");
       CurrNode.Parent->OccurrenceCount++;
-      assert(CurrNode.SuffixIdx < LeafVector.size() &&
-             "Suffix index out of bounds!");
+
       // Store the leaf in the leaf vector for pruning later.
       LeafVector[CurrNode.SuffixIdx] = &CurrNode;
-    } else {
-      // Traverse the tree depth-first.
-      for (auto &ChildPair : CurrNode.Children) {
-        setSuffixIndices(*ChildPair.second,
-                         CurrIdx + ChildPair.second->size());
-      }
     }
   }
 
@@ -426,8 +426,8 @@ private:
         //   | ABC  ---split--->  | AB
         //   n                    s
         //                     C / \ D
-        //                      n   l 
- 
+        //                      n   l
+
         // The node s from the diagram
         SuffixTreeNode *SplitNode =
             insertInternalNode(Active.Node,
@@ -890,12 +890,12 @@ struct InstructionMapper {
     assert(LegalInstrNumber < IllegalInstrNumber &&
            "Instruction mapping overflow!");
 
-    assert(IllegalInstrNumber != 
+    assert(IllegalInstrNumber !=
       DenseMapInfo<unsigned>::getEmptyKey() &&
       "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
 
-    assert(IllegalInstrNumber != 
-      DenseMapInfo<unsigned>::getTombstoneKey() && 
+    assert(IllegalInstrNumber !=
+      DenseMapInfo<unsigned>::getTombstoneKey() &&
       "IllegalInstrNumber cannot be DenseMap tombstone or empty key!");
 
     return MINumber;

@@ -76,6 +76,7 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/DebugCounter.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVNExpression.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -103,7 +104,8 @@ STATISTIC(NumGVNAvoidedSortedLeaderChanges,
 STATISTIC(NumGVNNotMostDominatingLeader,
           "Number of times a member dominated it's new classes' leader");
 STATISTIC(NumGVNDeadStores, "Number of redundant/dead stores eliminated");
-
+DEBUG_COUNTER(VNCounter, "newgvn-vn",
+              "Controls which instructions are value numbered")
 //===----------------------------------------------------------------------===//
 //                                GVN Pass
 //===----------------------------------------------------------------------===//
@@ -1096,7 +1098,7 @@ const Expression *NewGVN::performSymbolicCmpEvaluation(Instruction *I) {
   auto Op0 = lookupOperandLeader(CI->getOperand(0));
   auto Op1 = lookupOperandLeader(CI->getOperand(1));
   auto OurPredicate = CI->getPredicate();
-  if (shouldSwapOperands(Op1, Op0)) {
+  if (shouldSwapOperands(Op0, Op1)) {
     std::swap(Op0, Op1);
     OurPredicate = CI->getSwappedPredicate();
   }
@@ -1158,7 +1160,7 @@ const Expression *NewGVN::performSymbolicCmpEvaluation(Instruction *I) {
       auto *BranchOp0 = lookupOperandLeader(BranchCond->getOperand(0));
       auto *BranchOp1 = lookupOperandLeader(BranchCond->getOperand(1));
       auto BranchPredicate = BranchCond->getPredicate();
-      if (shouldSwapOperands(BranchOp1, BranchOp0)) {
+      if (shouldSwapOperands(BranchOp0, BranchOp1)) {
         std::swap(BranchOp0, BranchOp1);
         BranchPredicate = BranchCond->getSwappedPredicate();
       }
@@ -1708,7 +1710,6 @@ void NewGVN::cleanupTables() {
 #endif
   InstrDFS.clear();
   InstructionsToErase.clear();
-
   DFSToInstr.clear();
   BlockInstRange.clear();
   TouchedInstructions.clear();
@@ -1726,6 +1727,16 @@ std::pair<unsigned, unsigned> NewGVN::assignDFSNumbers(BasicBlock *B,
   }
 
   for (auto &I : *B) {
+    // There's no need to call isInstructionTriviallyDead more than once on
+    // an instruction. Therefore, once we know that an instruction is dead
+    // we change its DFS number so that it doesn't get value numbered.
+    if (isInstructionTriviallyDead(&I, TLI)) {
+      InstrDFS[&I] = 0;
+      DEBUG(dbgs() << "Skipping trivially dead instruction " << I << "\n");
+      markInstructionForDeletion(&I);
+      continue;
+    }
+
     InstrDFS[&I] = End++;
     DFSToInstr.emplace_back(&I);
   }
@@ -1796,18 +1807,14 @@ void NewGVN::valueNumberMemoryPhi(MemoryPhi *MP) {
 // congruence finding, and updating mappings.
 void NewGVN::valueNumberInstruction(Instruction *I) {
   DEBUG(dbgs() << "Processing instruction " << *I << "\n");
-
-  // There's no need to call isInstructionTriviallyDead more than once on
-  // an instruction. Therefore, once we know that an instruction is dead
-  // we change its DFS number so that it doesn't get numbered again.
-  if (InstrDFS[I] != 0 && isInstructionTriviallyDead(I, TLI)) {
-    InstrDFS[I] = 0;
-    DEBUG(dbgs() << "Skipping unused instruction\n");
-    markInstructionForDeletion(I);
-    return;
-  }
   if (!I->isTerminator()) {
-    const auto *Symbolized = performSymbolicEvaluation(I);
+    const Expression *Symbolized = nullptr;
+    if (DebugCounter::shouldExecute(VNCounter)) {
+      Symbolized = performSymbolicEvaluation(I);
+    } else {
+      // Mark the instruction as unused so we don't value number it again.
+      InstrDFS[I] = 0;
+    }
     // If we couldn't come up with a symbolic expression, use the unknown
     // expression
     if (Symbolized == nullptr)
@@ -1923,7 +1930,7 @@ void NewGVN::verifyComparisons(Function &F) {
     if (!ReachableBlocks.count(&BB))
       continue;
     for (auto &I : BB) {
-      if (InstructionsToErase.count(&I))
+      if (InstrDFS.lookup(&I) == 0)
         continue;
       if (isa<CmpInst>(&I)) {
         auto *CurrentVal = ValueToClass.lookup(&I);

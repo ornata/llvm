@@ -1093,52 +1093,38 @@ static void AddAliasScopeMetadata(CallSite CS, ValueToValueMapTy &VMap,
   }
 }
 
-/// Add @llvm.assume-based assumptions to preserve information supplied by
-/// argument attributes because the attributes will disappear after inlining.
-static void addAssumptions(CallSite CS, InlineFunctionInfo &IFI) {
-  if (!IFI.GetAssumptionCache)
+/// If the inlined function has non-byval align arguments, then
+/// add @llvm.assume-based alignment assumptions to preserve this information.
+static void AddAlignmentAssumptions(CallSite CS, InlineFunctionInfo &IFI) {
+  if (!PreserveAlignmentAssumptions || !IFI.GetAssumptionCache)
     return;
 
   AssumptionCache *AC = &(*IFI.GetAssumptionCache)(*CS.getCaller());
   auto &DL = CS.getCaller()->getParent()->getDataLayout();
 
-  // To avoid inserting redundant assumptions, check that an assumption provides
-  // new information in the caller. This might require a dominator tree.
+  // To avoid inserting redundant assumptions, we should check for assumptions
+  // already in the caller. To do this, we might need a DT of the caller.
   DominatorTree DT;
   bool DTCalculated = false;
-  auto calcDomTreeIfNeeded = [&]() {
-    if (!DTCalculated) {
-      DT.recalculate(*CS.getCaller());
-      DTCalculated = true;
-    }
-  };
 
   Function *CalledFunc = CS.getCalledFunction();
-  IRBuilder<> Builder(CS.getInstruction());
   for (Argument &Arg : CalledFunc->args()) {
-    Value *ArgVal = CS.getArgument(Arg.getArgNo());
-
     unsigned Align = Arg.getType()->isPointerTy() ? Arg.getParamAlignment() : 0;
-    if (PreserveAlignmentAssumptions && Align &&
-        !Arg.hasByValOrInAllocaAttr() && !Arg.hasNUses(0)) {
+    if (Align && !Arg.hasByValOrInAllocaAttr() && !Arg.hasNUses(0)) {
+      if (!DTCalculated) {
+        DT.recalculate(*CS.getCaller());
+        DTCalculated = true;
+      }
+
       // If we can already prove the asserted alignment in the context of the
       // caller, then don't bother inserting the assumption.
-      calcDomTreeIfNeeded();
-      if (getKnownAlignment(ArgVal, DL, CS.getInstruction(), AC, &DT) < Align) {
-        CallInst *Asmp = Builder.CreateAlignmentAssumption(DL, ArgVal, Align);
-        AC->registerAssumption(Asmp);
-      }
-    }
+      Value *ArgVal = CS.getArgument(Arg.getArgNo());
+      if (getKnownAlignment(ArgVal, DL, CS.getInstruction(), AC, &DT) >= Align)
+        continue;
 
-    if (Arg.hasNonNullAttr()) {
-      // If we can already prove nonnull in the context of the caller, then
-      // don't bother inserting the assumption.
-      calcDomTreeIfNeeded();
-      if (!isKnownNonNullAt(ArgVal, CS.getInstruction(), &DT)) {
-        Value *NotNull = Builder.CreateIsNotNull(ArgVal);
-        CallInst *Asmp = Builder.CreateAssumption(NotNull);
-        AC->registerAssumption(Asmp);
-      }
+      CallInst *NewAsmp = IRBuilder<>(CS.getInstruction())
+                              .CreateAlignmentAssumption(DL, ArgVal, Align);
+      AC->registerAssumption(NewAsmp);
     }
   }
 }
@@ -1357,22 +1343,26 @@ static bool allocaWouldBeStaticInEntry(const AllocaInst *AI ) {
   return isa<Constant>(AI->getArraySize()) && !AI->isUsedWithInAlloca();
 }
 
-/// Update inlined instructions' line numbers to
-/// to encode location where these instructions are inlined.
-static void fixupLineNumbers(Function *Fn, Function::iterator FI,
-                             Instruction *TheCall, bool CalleeHasDebugInfo) {
+/// Update inlined instructions' line numbers to to encode location where these
+/// instructions are inlined.  Also strip all debug intrinsics that were inlined
+/// into a nodebug function; there is no debug info the backend could produce
+/// for a function without a DISubprogram attachment.
+static void fixupDebugInfo(Function *Fn, Function::iterator FI,
+                           Instruction *TheCall, bool CalleeHasDebugInfo) {
+  bool CallerHasDebugInfo = Fn->getSubprogram();
+  bool StripDebugInfo = !CallerHasDebugInfo && CalleeHasDebugInfo;
+  SmallVector<DbgInfoIntrinsic *, 8> IntrinsicsToErase;
   const DebugLoc &TheCallDL = TheCall->getDebugLoc();
-  if (!TheCallDL)
-    return;
 
   auto &Ctx = Fn->getContext();
-  DILocation *InlinedAtNode = TheCallDL;
+  DILocation *InlinedAtNode = nullptr;
 
   // Create a unique call site, not to be confused with any other call from the
   // same location.
-  InlinedAtNode = DILocation::getDistinct(
-      Ctx, InlinedAtNode->getLine(), InlinedAtNode->getColumn(),
-      InlinedAtNode->getScope(), InlinedAtNode->getInlinedAt());
+  if (TheCallDL)
+    InlinedAtNode = DILocation::getDistinct(
+        Ctx, TheCallDL->getLine(), TheCallDL->getColumn(),
+        TheCallDL->getScope(), TheCallDL->getInlinedAt());
 
   // Cache the inlined-at nodes as they're built so they are reused, without
   // this every instruction's inlined-at chain would become distinct from each
@@ -1382,6 +1372,17 @@ static void fixupLineNumbers(Function *Fn, Function::iterator FI,
   for (; FI != Fn->end(); ++FI) {
     for (BasicBlock::iterator BI = FI->begin(), BE = FI->end();
          BI != BE; ++BI) {
+      if (StripDebugInfo) {
+        // Inlining into a nodebug function.
+        if (auto *DI = dyn_cast<DbgInfoIntrinsic>(BI))
+          // Mark dead debug intrinsics for deletion.
+          IntrinsicsToErase.push_back(DI);
+        else
+          // Remove the dangling debug location.
+          BI->setDebugLoc(DebugLoc());
+        continue;
+      }
+
       if (DebugLoc DL = BI->getDebugLoc()) {
         BI->setDebugLoc(
             updateInlinedAtInfo(DL, InlinedAtNode, BI->getContext(), IANodes));
@@ -1404,6 +1405,9 @@ static void fixupLineNumbers(Function *Fn, Function::iterator FI,
       BI->setDebugLoc(TheCallDL);
     }
   }
+
+  for (auto *DI : IntrinsicsToErase)
+    DI->eraseFromParent();
 }
 /// Update the block frequencies of the caller after a callee has been inlined.
 ///
@@ -1635,10 +1639,10 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
       VMap[&*I] = ActualArg;
     }
 
-    // Add assumptions if necessary. We do this before the inlined instructions
-    // are actually cloned into the caller so that we can easily check what will
-    // be known at the start of the inlined code.
-    addAssumptions(CS, IFI);
+    // Add alignment assumptions if necessary. We do this before the inlined
+    // instructions are actually cloned into the caller so that we can easily
+    // check what will be known at the start of the inlined code.
+    AddAlignmentAssumptions(CS, IFI);
 
     // We want the inliner to prune the code as it copies.  We would LOVE to
     // have no dead or constant instructions leftover after inlining occurs
@@ -1724,8 +1728,8 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
     // For 'nodebug' functions, the associated DISubprogram is always null.
     // Conservatively avoid propagating the callsite debug location to
     // instructions inlined from a function whose DISubprogram is not null.
-    fixupLineNumbers(Caller, FirstNewBlock, TheCall,
-                     CalledFunc->getSubprogram() != nullptr);
+    fixupDebugInfo(Caller, FirstNewBlock, TheCall,
+                   CalledFunc->getSubprogram() != nullptr);
 
     // Clone existing noalias metadata if necessary.
     CloneAliasScopeMetadata(CS, VMap);

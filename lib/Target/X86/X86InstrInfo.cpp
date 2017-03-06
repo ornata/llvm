@@ -10419,7 +10419,7 @@ X86InstrInfo::getOutliningType(MachineInstr &MI) const {
   // catch it.
   if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
-      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP)) 
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP))
     return MachineOutlinerInstrType::Illegal;
 
   if (MI.readsRegister(X86::RIP, &RI) ||
@@ -10463,4 +10463,3 @@ X86InstrInfo::insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
                       .addGlobalAddress(M.getNamedValue(MF.getName())));
   return It;
 }
-

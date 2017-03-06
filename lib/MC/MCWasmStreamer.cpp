@@ -142,13 +142,6 @@ void MCWasmStreamer::EmitValueToAlignment(unsigned ByteAlignment, int64_t Value,
                                          MaxBytesToEmit);
 }
 
-// Add a symbol for the file name of this module. They start after the
-// null symbol and don't count as normal symbol, i.e. a non-STT_FILE symbol
-// with the same name may appear.
-void MCWasmStreamer::EmitFileDirective(StringRef Filename) {
-  getAssembler().addFileName(Filename);
-}
-
 void MCWasmStreamer::EmitIdent(StringRef IdentString) {
   MCSection *Comment = getAssembler().getContext().getWasmSection(
       ".comment", 0, 0);
@@ -209,22 +202,6 @@ void MCWasmStreamer::EmitThumbFunc(MCSymbol *Func) {
 }
 
 void MCWasmStreamer::EmitSymbolDesc(MCSymbol *Symbol, unsigned DescValue) {
-  llvm_unreachable("Wasm doesn't support this directive");
-}
-
-void MCWasmStreamer::BeginCOFFSymbolDef(const MCSymbol *Symbol) {
-  llvm_unreachable("Wasm doesn't support this directive");
-}
-
-void MCWasmStreamer::EmitCOFFSymbolStorageClass(int StorageClass) {
-  llvm_unreachable("Wasm doesn't support this directive");
-}
-
-void MCWasmStreamer::EmitCOFFSymbolType(int Type) {
-  llvm_unreachable("Wasm doesn't support this directive");
-}
-
-void MCWasmStreamer::EndCOFFSymbolDef() {
   llvm_unreachable("Wasm doesn't support this directive");
 }
 
