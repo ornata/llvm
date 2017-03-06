@@ -1246,7 +1246,7 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
         Occurrences.size(),  // Number of occurrences.
         CandidateSequence,   // Sequence to outline.
         FnBenefit,           // Instructions saved by outlining this function.
-        CanBeTailCall
+        CanBeTailCall        // True if this function can be tail called.
         );
 
     // Save each of the occurrences of the candidate so we can outline them.
@@ -1284,8 +1284,6 @@ MachineOutliner::createOutlinedFunction(Module &M, const OutlinedFunction &OF,
       M.getOrInsertFunction(NameStream.str(), Type::getVoidTy(C), NULL));
   assert(F && "Function was null!");
 
-  // NOTE: If this is linkonceodr, then we can take advantage of linker deduping
-  // which gives us better results when we outline from linkonceodr functions.
   F->setLinkage(GlobalValue::PrivateLinkage);
   F->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
 
