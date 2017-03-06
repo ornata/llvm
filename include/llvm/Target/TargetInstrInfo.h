@@ -1511,56 +1511,91 @@ public:
   /// \brief Return how many instructions would be saved by outlining a
   /// sequence containing \p SequenceSize instructions that appears
   /// \p Occurrences times in a module.
-  virtual unsigned getOutliningBenefit(size_t SequenceSize, size_t Occurrences)
-  const {
+  virtual unsigned getOutliningBenefit(size_t SequenceSize, size_t Occurrences,
+                                       bool CanBeTailCall) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::getOutliningBenefit!");
   }
 
   /// Represents how an instruction should be mapped by the outliner.
+  ///
   /// \p Legal instructions are those which are safe to outline.
   /// \p Illegal instructions are those which cannot be outlined.
   /// \p Invisible instructions are instructions which can be outlined, but
   /// shouldn't actually impact the outlining result.
-  enum MachineOutlinerInstrType {Legal, Illegal, Invisible};
+  /// \p TailCall instructions can be outlined, and their sequences are outlined
+  //  as tail calls.
+  enum MachineOutlinerInstrType {Legal, Illegal, Invisible, TailCall};
 
   /// Return true if the instruction is legal to outline.
+  ///
+  /// \param MI The \p MachineInstr we want to outline.
+  ///
+  /// \returns A \p MachineOutlinerInstrType denoting how or if MI should be
+  /// outlined.
   virtual MachineOutlinerInstrType getOutliningType(MachineInstr &MI) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::getOutliningType!");
   }
 
   /// Insert a custom epilogue for outlined functions.
+  ///
   /// This may be empty, in which case no epilogue or return statement will be
   /// emitted.
+  ///
+  /// \param MBB The \p MachineBasicBlock to insert the outliner epilogue into.
+  /// \param MF The \p parent \p MachineFunction of \p MBB.
+  /// \param IsTailCall Denotes whether or not this candidate is being tail
+  /// called.
   virtual void insertOutlinerEpilogue(MachineBasicBlock &MBB,
-                                      MachineFunction &MF) const {
+                                      MachineFunction &MF,
+                                      bool IsTailCall) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinerEpilogue!");
   }
 
   /// Insert a call to an outlined function into the program.
+  ///  
   /// Returns an iterator to the spot where we inserted the call. This must be
   /// implemented by the target.
+  ///
+  /// \param M The module being outlined from.
+  /// \param MBB The \p MachineBasicBlock to insert the outlined call into.
+  /// \param It The location where the call should be inserted.
+  /// \param MF The outlined function that should be called.
+  /// \param IsTailCall Denotes whether or not this function is being tail
+  /// called.
+  ///
+  /// \returns \p It after the insertion of the call.
   virtual MachineBasicBlock::iterator
   insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
-                     MachineBasicBlock::iterator &It, MachineFunction &MF)
+                     MachineBasicBlock::iterator &It, MachineFunction &MF,
+                     bool IsTailCall)
   const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinedCall!");
   }
 
   /// Insert a custom prologue for outlined functions.
+  ///
   /// This may be empty, in which case no prologue will be emitted.
+  ///
+  /// \param MBB The \p MachineBasicBlock to insert the outliner epilogue into.
+  /// \param MF The \p parent \p MachineFunction of \p MBB.
+  /// \param IsTailCall Denotes whether or not this candidate is being tail
+  /// called.
   virtual void insertOutlinerPrologue(MachineBasicBlock &MBB,
-                                      MachineFunction &MF) const {
+                                      MachineFunction &MF,
+                                      bool IsTailCall) const {
     llvm_unreachable(
         "Target didn't implement TargetInstrInfo::insertOutlinerPrologue!");
   }
 
-  /// Return true if the function can safely be outlined from.
-  /// By default, this means that the function has no red zone.
-  virtual bool isFunctionSafeToOutlineFrom(MachineFunction &F) const {
+  /// Decides whether or not a function can safely be outlined from.
+  ///
+  /// \returns True if the function can safely be outlined from, and false
+  /// otherwise.
+  virtual bool isFunctionSafeToOutlineFrom(MachineFunction &MF) const {
     llvm_unreachable("Target didn't implement "
                      "TargetInstrInfo::isFunctionSafeToOutlineFrom!");
   }
