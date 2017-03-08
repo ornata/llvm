@@ -71,6 +71,87 @@ STATISTIC(FunctionsCreated, "Number of functions created");
 
 namespace {
 
+/// \brief An individual sequence of instructions to be replaced with a call to
+/// an outlined function.
+struct Candidate {
+
+  /// Set to false if the candidate overlapped with another candidate.
+  bool InCandidateList = true;
+
+  /// The start index of this \p Candidate.
+  size_t StartIdx;
+
+  /// The number of instructions in this \p Candidate.
+  size_t Len;
+
+  /// The index of this \p Candidate's \p OutlinedFunction in the list of
+  /// \p OutlinedFunctions.
+  size_t FunctionIdx;
+
+  unsigned Benefit = 0;
+
+  Candidate(size_t StartIdx, size_t Len, size_t FunctionIdx)
+      : StartIdx(StartIdx), Len(Len), FunctionIdx(FunctionIdx) {}
+
+  Candidate() {}
+
+  /// \brief Used to ensure that \p Candidates are outlined in an order that
+  /// preserves the start and end indices of other \p Candidates.
+  bool operator<(const Candidate &RHS) const { return StartIdx > RHS.StartIdx; }
+
+  void dump() {
+    errs() << "Candidate\n";
+    errs() << "--- InCandidateList = " << InCandidateList << "\n";
+    errs() << "--- StartIdx = " << StartIdx << "\n";
+    errs() << "--- Len = " << Len << "\n";
+    errs() << "--- FunctionIdx = " << FunctionIdx << "\n";
+  }
+};
+
+/// \brief The information necessary to create an outlined function for some
+/// class of candidate.
+struct OutlinedFunction {
+
+  /// The actual outlined function created.
+  /// This is initialized after we go through and create the actual function.
+  MachineFunction *MF = nullptr;
+
+  /// A number assigned to this function which appears at the end of its name.
+  size_t Name;
+
+  /// The number of times that this function has appeared.
+  size_t OccurrenceCount = 0;
+
+  /// \brief The sequence of integers corresponding to the instructions in this
+  /// function.
+  std::vector<unsigned> Sequence;
+
+  /// The number of instructions this function would save.
+  unsigned Benefit = 0;
+
+  bool IsTailCall = false;
+
+  std::vector<Candidate> CandidateList;
+
+  OutlinedFunction(size_t Name, size_t OccurrenceCount,
+                   const std::vector<unsigned> &Sequence,
+                   unsigned Benefit, bool IsTailCall)
+      : Name(Name), OccurrenceCount(OccurrenceCount), Sequence(Sequence),
+        Benefit(Benefit), IsTailCall(IsTailCall)
+        {}
+
+  void dump() {
+    errs() << "OutlinedFunction " << Name << "\n";
+    errs() << "--- OccurrenceCount = " << OccurrenceCount << "\n";
+    errs() << "--- Benefit = " << Benefit << "\n";
+    errs() << "--- Sequence = \n";
+    errs() << "--- ";
+    for (size_t S : Sequence) 
+      errs() << S << " ";
+    errs() << "\n";
+  }
+};
+
 /// Represents an undefined index in the suffix tree.
 const size_t EmptyIdx = -1;
 
@@ -168,6 +249,10 @@ struct SuffixTreeNode {
   /// the number of suffixes that the node's string is a prefix of.
   size_t OccurrenceCount = 0;
 
+  /// The length of the string formed by concatenating the edge labels from the
+  /// root to this node.
+  size_t ConcatLen = 0;
+
   /// Returns true if this node is a leaf.
   bool isLeaf() const { return SuffixIdx != EmptyIdx; }
 
@@ -184,7 +269,7 @@ struct SuffixTreeNode {
     assert(*EndIdx != EmptyIdx && "EndIdx is undefined!");
 
     // Size = the number of elements in the string.
-    // For example, [0 1 2 3] has length 4, not 3. 3-0 = 3, so we have 3-0+1.
+    // For example, [0 1 2 3] has size 4, not 3. 3-0 = 3, so we have 3-0+1.
     return *EndIdx - StartIdx + 1;
   }
 
@@ -319,6 +404,15 @@ private:
   void setSuffixIndices(SuffixTreeNode &CurrNode, size_t CurrIdx) {
 
     bool IsLeaf = CurrNode.Children.size() == 0 && !CurrNode.isRoot();
+
+    // Store the size of this node.
+    if (!CurrNode.isRoot()) {
+      if (CurrNode.ConcatLen == 0)
+        CurrNode.ConcatLen = CurrNode.size();
+
+      if (CurrNode.Parent)
+       CurrNode.ConcatLen += CurrNode.Parent->ConcatLen;
+    }
 
     // Traverse the tree depth-first.
     for (auto &ChildPair : CurrNode.Children) {
@@ -515,6 +609,113 @@ private:
     }
   }
 
+void findAllBeneficial(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &MaxLen,
+                const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)>
+                &BenefitFn,
+                std::vector<Candidate> &CandidateList,
+                std::vector<OutlinedFunction> &FunctionList,
+                size_t &FnIdx) {
+
+  for (SuffixTreeNode *Leaf : LeafVector) {
+
+    if (!Leaf->IsInTree)
+      continue;
+
+    SuffixTreeNode *Parent = Leaf->Parent;
+
+    if (Parent->OccurrenceCount < 2 || Parent->isRoot() || !Parent->IsInTree)
+      continue;
+
+    size_t StringLen = Leaf->ConcatLen - Leaf->size();
+    unsigned Benefit = BenefitFn(*Leaf, StringLen);
+
+    if (Benefit < 1)
+      continue;
+
+    if (StringLen > MaxLen)
+      MaxLen = StringLen;
+
+    unsigned OccurrenceCount = 0;
+    for (auto &ChildPair : Parent->Children) {
+      SuffixTreeNode *M = ChildPair.second;
+
+      // Is it a leaf? If so, we have an occurrence of this candidate.
+      if (M && M->IsInTree && M->isLeaf()) {
+        OccurrenceCount++;
+        CandidateList.emplace_back(M->SuffixIdx, StringLen, FnIdx);
+        CandidateList.back().Benefit = Benefit;
+        M->IsInTree = false;
+      }
+    }
+
+    // Save the function for the new candidate sequence.
+    std::vector<unsigned> CandidateSequence;
+    for (unsigned i = Leaf->SuffixIdx; i < Leaf->SuffixIdx + StringLen; i++)
+      CandidateSequence.push_back(Str[i]);
+
+    FunctionList.emplace_back(FnIdx, OccurrenceCount, CandidateSequence, Benefit, false);
+
+    // Move to the next function.
+    FnIdx++;
+    Parent->IsInTree = false;
+  }
+   /*
+    if (!CurrNode.IsInTree)
+      return;
+
+    // Can we traverse further down the tree?
+    if (!CurrNode.isLeaf()) {
+      // If yes, continue the traversal.
+      for (auto &ChildPair : CurrNode.Children) {
+        if (ChildPair.second && ChildPair.second->IsInTree)
+          findAllBeneficial(*ChildPair.second, CurrLen + ChildPair.second->size(), MaxLen, BenefitFn, CandidateList, FunctionList, FnIdx);
+      }
+    } else {
+      // We hit a leaf.
+      size_t StringLen = CurrLen - CurrNode.size();
+      errs() << "StringLen = " << StringLen << "\n";
+      errs() << "ConcatLen = " << CurrNode.ConcatLen - CurrNode.size() << "\n";
+      assert(StringLen == CurrNode.ConcatLen - CurrNode.size() && "SL != CL"); 
+      unsigned Benefit = BenefitFn(CurrNode, StringLen);
+
+      // Is it beneficial?
+      if (Benefit < 1)
+        return;
+
+      if (StringLen > MaxLen)
+        MaxLen = StringLen;
+
+      // It is, so store all of its occurrences in the candidate list.
+      SuffixTreeNode *Parent = CurrNode.Parent;
+
+      for (auto &ChildPair : Parent->Children) {
+        SuffixTreeNode *M = ChildPair.second;
+
+        // Is it a leaf? If so, we have an occurrence of this candidate.
+        if (M && M->IsInTree && M->isLeaf()) {
+          CandidateList.emplace_back(M->SuffixIdx, StringLen, FnIdx);
+          CandidateList.back().dump();
+          size_t StartIdx = M->SuffixIdx;
+          for (size_t i = 0; i < StringLen; i++) {
+            errs() << Str[StartIdx + i] << " ";
+          }
+          errs() << "\n";
+          M->IsInTree = false;
+        }
+      }
+
+      std::vector<unsigned> CandidateSequence;
+      for (unsigned i = CurrNode.SuffixIdx; i < CurrNode.SuffixIdx + StringLen; i++)
+        CandidateSequence.push_back(Str[i]);
+
+      FunctionList.emplace_back(FnIdx, Parent->OccurrenceCount, CandidateSequence, Benefit, false);
+
+      // Move to the next function.
+      FnIdx++;
+    }
+    */
+}
+
 public:
 
   unsigned operator[](size_t i) {
@@ -541,6 +742,14 @@ public:
 
     for (size_t Idx = 0; Idx < Length; Idx++)
       Best.push_back(Str[Idx + StartIdx]);
+  }
+
+  unsigned findAllCandidates(std::vector<Candidate> &CandidateList, std::vector<OutlinedFunction> &FunctionList, const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)> &BenefitFn) {
+    CandidateList.clear();
+    size_t MaxLen = 0;
+    size_t FnIdx = 0;
+    findAllBeneficial(*Root, 0, MaxLen, BenefitFn, CandidateList, FunctionList, FnIdx);
+    return MaxLen;
   }
 
   /// Perform a depth-first search for \p QueryString on the suffix tree.
@@ -757,63 +966,7 @@ public:
   }
 };
 
-/// \brief An individual sequence of instructions to be replaced with a call to
-/// an outlined function.
-struct Candidate {
 
-  /// Set to false if the candidate overlapped with another candidate.
-  bool InCandidateList = true;
-
-  /// The start index of this \p Candidate.
-  size_t StartIdx;
-
-  /// The number of instructions in this \p Candidate.
-  size_t Len;
-
-  /// The index of this \p Candidate's \p OutlinedFunction in the list of
-  /// \p OutlinedFunctions.
-  size_t FunctionIdx;
-
-  Candidate(size_t StartIdx, size_t Len, size_t FunctionIdx)
-      : StartIdx(StartIdx), Len(Len), FunctionIdx(FunctionIdx) {}
-
-  Candidate() {}
-
-  /// \brief Used to ensure that \p Candidates are outlined in an order that
-  /// preserves the start and end indices of other \p Candidates.
-  bool operator<(const Candidate &RHS) const { return StartIdx > RHS.StartIdx; }
-};
-
-/// \brief The information necessary to create an outlined function for some
-/// class of candidate.
-struct OutlinedFunction {
-
-  /// The actual outlined function created.
-  /// This is initialized after we go through and create the actual function.
-  MachineFunction *MF = nullptr;
-
-  /// A number assigned to this function which appears at the end of its name.
-  size_t Name;
-
-  /// The number of times that this function has appeared.
-  size_t OccurrenceCount = 0;
-
-  /// \brief The sequence of integers corresponding to the instructions in this
-  /// function.
-  std::vector<unsigned> Sequence;
-
-  /// The number of instructions this function would save.
-  unsigned Benefit = 0;
-
-  bool IsTailCall = false;
-
-  OutlinedFunction(size_t Name, size_t OccurrenceCount,
-                   const std::vector<unsigned> &Sequence,
-                   unsigned Benefit, bool IsTailCall)
-      : Name(Name), OccurrenceCount(OccurrenceCount), Sequence(Sequence),
-        Benefit(Benefit), IsTailCall(IsTailCall)
-        {}
-};
 
 /// \brief Maps \p MachineInstrs to unsigned integers and stores the mappings.
 struct InstructionMapper {
@@ -1137,33 +1290,48 @@ void MachineOutliner::pruneOverlaps(std::vector<Candidate> &CandidateList,
       if (C2End < C1.StartIdx)
         continue;
 
-      // C2 overlaps with C1. Because we pruned the tree already, the only way
-      // this can happen is if C1 is a proper suffix of C2. Thus, we must have
-      // found C1 first during our query, so it must have benefit greater or
-      // equal to C2. Greedily pick C1 as the candidate to keep and toss out C2.
       DEBUG (
-            size_t C1End = C1.StartIdx + C1.Len - 1;
-            dbgs() << "- Found an overlap to purge.\n";
-            dbgs() << "--- C1 :[" << C1.StartIdx << ", " << C1End << "]\n";
-            dbgs() << "--- C2 :[" << C2.StartIdx << ", " << C2End << "]\n";
-            );
+          size_t C1End = C1.StartIdx + C1.Len - 1;
+          dbgs() << "- Found an overlap to purge.\n";
+          dbgs() << "--- C1 :[" << C1.StartIdx << ", " << C1End << "]\n";
+          dbgs() << "--- C2 :[" << C2.StartIdx << ", " << C2End << "]\n";
+        );
 
-      // Update the function's occurrence count and benefit to reflec that C2
-      // is being removed.
-      F2.OccurrenceCount--;
-      F2.Benefit = TII.getOutliningBenefit(F2.Sequence.size(),
-                                           F2.OccurrenceCount,
-                                           F2.IsTailCall
-                                           );
 
-      // Mark C2 as not in the list.
-      C2.InCandidateList = false;
+      // Choose the better of C1 and C2 to keep.
+      if (C1.Benefit >= C2.Benefit) {
+        // Update the function's occurrence count and benefit to reflec that C2
+        // is being removed.
+        F2.OccurrenceCount--;
+        F2.Benefit = TII.getOutliningBenefit(F2.Sequence.size(),
+                                             F2.OccurrenceCount,
+                                             F2.IsTailCall
+                                             );
 
-      DEBUG (
-            dbgs() << "- Removed C2. \n";
-            dbgs() << "--- Num fns left for C2: " << F2.OccurrenceCount << "\n";
-            dbgs() << "--- C2's benefit: " << F2.Benefit << "\n";
-            );
+        // Mark C2 as not in the list.
+        C2.InCandidateList = false;
+        DEBUG (
+          dbgs() << "- Removed C2. \n";
+          dbgs() << "--- Num fns left for C2: " << F2.OccurrenceCount << "\n";
+          dbgs() << "--- C2's benefit: " << F2.Benefit << "\n";
+        );
+      } else {
+
+        // Update F1 because we're removing one of its candidates.
+        F1.OccurrenceCount--;
+        F1.Benefit = TII.getOutliningBenefit(F1.Sequence.size(),
+                                             F1.OccurrenceCount,
+                                             F1.IsTailCall
+                                             );
+
+        // Mark C1 as not in the list.
+        C1.InCandidateList = false;
+        DEBUG (
+          dbgs() << "- Removed C1. \n";
+          dbgs() << "--- Num fns left for C1: " << F1.OccurrenceCount << "\n";
+          dbgs() << "--- C1's benefit: " << F1.Benefit << "\n";
+        );
+      }
     }
   }
 }
@@ -1176,7 +1344,7 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
                                     const TargetInstrInfo &TII) {
 
   std::vector<unsigned> CandidateSequence; // Current outlining candidate.
-  unsigned MaxCandidateLen = 0; // Length of the longest candidate.
+  size_t MaxCandidateLen = 0; // Length of the longest candidate.
 
   // Function for maximizing query in the suffix tree.
   // This allows us to define more fine-grained types of things to outline in
@@ -1206,9 +1374,17 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
     return TII.getOutliningBenefit(StringLen, Occurrences, CanBeTailCall);
   };
 
+  MaxCandidateLen = ST.findAllCandidates(CandidateList, FunctionList, BenefitFn);
+
+  for (auto &OF : FunctionList) {
+    bool CanBeTailCall = Mapper.ReturnIDs.count(OF.Sequence.back());
+    OF.IsTailCall = CanBeTailCall;
+  }
+
   // Repeatedly query the suffix tree for the substring that maximizes
   // BenefitFn. Find the occurrences of that string, prune the tree, and store
   // each occurrence as a candidate.
+  /*
   for (ST.bestRepeatedSubstring(CandidateSequence, BenefitFn);
        CandidateSequence.size() > 1;
        ST.bestRepeatedSubstring(CandidateSequence, BenefitFn)) {
@@ -1257,6 +1433,7 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
 
     FunctionsCreated++;
   }
+  */
 
   // Sort the candidates in decending order. This will simplify the outlining
   // process when we have to remove the candidates from the mapping by
@@ -1264,6 +1441,7 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
   std::stable_sort(CandidateList.begin(), CandidateList.end());
 
   return MaxCandidateLen;
+  
 }
 
 MachineFunction *
