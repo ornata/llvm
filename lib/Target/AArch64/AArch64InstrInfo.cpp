@@ -4215,3 +4215,258 @@ AArch64InstrInfo::getSerializableBitmaskMachineOperandTargetFlags() const {
       {MO_TLS, "aarch64-tls"}};
   return makeArrayRef(TargetFlags);
 }
+
+unsigned AArch64InstrInfo::getOutliningBenefit(size_t SequenceSize,
+                                               size_t Occurrences,
+                                               bool CanBeTailCall) const {
+  unsigned NotOutlinedSize = SequenceSize * Occurrences;
+  unsigned OutlinedSize;
+
+  // Is this candidate something we can outline as a tail call?
+  if (CanBeTailCall) {
+    // If yes, then we just outline the sequence and replace each of its
+    // occurrences with a branch instruction.
+    OutlinedSize = SequenceSize + Occurrences;
+  } else {
+    // If no, then we outline the sequence (SequenceSize), add a return (+1),
+    // and replace each occurrence with a save/restore to LR and a call
+    // (3 * Occurrences)
+    OutlinedSize = (SequenceSize + 1) + (3 * Occurrences);
+  }
+
+  // Return the number of instructions saved by outlining this sequence.
+  return NotOutlinedSize > OutlinedSize ? NotOutlinedSize - OutlinedSize : 0;
+}
+
+bool AArch64InstrInfo::isFunctionSafeToOutlineFrom(MachineFunction &MF) const {
+  return MF.getFunction()->hasFnAttribute(Attribute::NoRedZone);
+}
+
+int AArch64InstrInfo::getPostOutliningFixup(MachineInstr &MI) const {
+
+  auto &StackOffsetOperand = MI.getOperand(MI.getNumExplicitOperands() - 1);
+
+  // Don't fixup things if they don't have an offset to fix.
+  if (!StackOffsetOperand.isImm())
+    return -1;
+
+  switch (MI.getOpcode()) {
+
+  // Scale = 1
+  case AArch64::LDURBBi:
+  case AArch64::LDURBi:
+  case AArch64::LDURDi:
+  case AArch64::LDURHHi:
+  case AArch64::LDURHi:
+  case AArch64::LDURQi:
+  case AArch64::LDURSBWi:
+  case AArch64::LDURSBXi:
+  case AArch64::LDURSHWi:
+  case AArch64::LDURSHXi:
+  case AArch64::LDURSWi:
+  case AArch64::LDURSi:
+  case AArch64::LDURWi:
+  case AArch64::LDURXi:
+  case AArch64::STURBBi:
+  case AArch64::STURBi:
+  case AArch64::STURDi:
+  case AArch64::STURHHi:
+  case AArch64::STURHi:
+  case AArch64::STURQi:
+  case AArch64::STURSi:
+  case AArch64::STURWi:
+  case AArch64::STURXi:
+    return StackOffsetOperand.getImm() + 16;
+
+  // Scale = 2
+  case AArch64::LDRHHui:
+  case AArch64::LDRHui:
+  case AArch64::LDRSHWui:
+  case AArch64::LDRSHXui:
+  case AArch64::STRHHui:
+  case AArch64::STRHui:
+    return StackOffsetOperand.getImm() + 8;
+
+  // Scale = 4
+  case AArch64::LDNPSi:
+  case AArch64::LDNPWi:
+  case AArch64::LDPSi:
+  case AArch64::LDPWi:
+  case AArch64::LDRSWui:
+  case AArch64::LDRSui:
+  case AArch64::LDRWui:
+  case AArch64::STNPSi:
+  case AArch64::STNPWi:
+  case AArch64::STPSi:
+  case AArch64::STPWi:
+  case AArch64::STRSui:
+  case AArch64::STRWui:
+    return StackOffsetOperand.getImm() + 4;
+
+  // Scale = 8
+  case AArch64::LDNPDi:
+  case AArch64::LDNPXi:
+  case AArch64::LDPDi:
+  case AArch64::LDPXi:
+  case AArch64::LDRDui:
+  case AArch64::LDRXui:
+  case AArch64::STNPDi:
+  case AArch64::STNPXi:
+  case AArch64::STPDi:
+  case AArch64::STPXi:
+  case AArch64::STRDui:
+  case AArch64::STRXui:
+    return StackOffsetOperand.getImm() + 2;
+
+  // Scale = 16
+  case AArch64::LDNPQi:
+  case AArch64::LDPQi:
+  case AArch64::LDRQui:
+  case AArch64::STNPQi:
+  case AArch64::STPQi:
+  case AArch64::STRQui:
+    return StackOffsetOperand.getImm() + 1;
+  default:
+    break;
+  }
+
+  return -1;
+}
+
+AArch64GenInstrInfo::MachineOutlinerInstrType
+AArch64InstrInfo::getOutliningType(MachineInstr &MI) const {
+
+  MachineFunction *MF = MI.getParent()->getParent();
+  AArch64FunctionInfo *FuncInfo = MF->getInfo<AArch64FunctionInfo>();
+
+  // Don't outline LOHs.
+  if (FuncInfo->getLOHRelated().count(&MI))
+    return MachineOutlinerInstrType::Illegal;
+
+  // Don't allow debug values to impact outlining type.
+  if (MI.isDebugValue() || MI.isIndirectDebugValue())
+    return MachineOutlinerInstrType::Invisible;
+
+  if (MI.isPosition())
+    return MachineOutlinerInstrType::Illegal;
+
+  for (const MachineOperand &MOP : MI.operands())
+    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || MOP.isFI() ||
+        MOP.isTargetIndex())
+      return MachineOutlinerInstrType::Illegal;
+
+  if (MI.modifiesRegister(AArch64::LR, &RI) ||
+      MI.readsRegister(AArch64::LR, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::LR) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::LR))
+      return MachineOutlinerInstrType::Illegal;
+
+  // Don't outline returns or basic block terminators.
+  if (MI.isTerminator() || MI.isReturn()) {
+
+    // Does its parent have any successors in its MachineFunction?
+    if (MI.getParent()->succ_empty())
+        return MachineOutlinerInstrType::TailCall;
+
+    // It does have successors, so we can't outline it.
+    return MachineOutlinerInstrType::Illegal;
+  }
+
+  if (MI.modifiesRegister(AArch64::SP, &RI) ||
+      MI.readsRegister(AArch64::SP, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP)) {
+
+    // Can this instruction be fixed up after we outline it?
+    if (getPostOutliningFixup(MI) == -1)
+      return MachineOutlinerInstrType::Illegal;
+  }
+
+  // Is this a tail call? If yes, we can outline as a tail call.
+  if (isTailCall(MI))
+    return MachineOutlinerInstrType::TailCall;
+
+  return MachineOutlinerInstrType::Legal;
+}
+
+void AArch64InstrInfo::fixupPostOutline(MachineFunction &MF) const {
+
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      if ((MI.modifiesRegister(AArch64::SP, &RI) ||
+           MI.readsRegister(AArch64::SP, &RI) ||
+           MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
+           MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP))) {
+
+        auto &StackOffsetOperand = MI.getOperand(MI.getNumExplicitOperands() - 1);
+        assert(StackOffsetOperand.isImm() && "Stack offset wasn't immediate!");
+        int64_t NewOffset = getPostOutliningFixup(MI);
+
+        assert(NewOffset != -1 && "Unfixable instruction shouldn't make it here!");
+
+        StackOffsetOperand.setImm(NewOffset);
+      }
+    }
+  }
+}
+
+void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
+                                              MachineFunction &MF,
+                                              bool IsTailCall) const {
+
+  // If this is a tail call outlined function, then there's already a return.
+  if (IsTailCall)
+    return;
+
+  // It's not a tail call, so we have to insert the return ourselves.
+  MachineInstr *ret = BuildMI(MF, DebugLoc(), get(AArch64::RET))
+                          .addReg(AArch64::LR, RegState::Undef);
+  MBB.insert(MBB.end(), ret);
+
+  fixupPostOutline(MF);
+}
+
+void AArch64InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,
+                                              MachineFunction &MF,
+                                              bool IsTailCall) const {}
+
+MachineBasicBlock::iterator AArch64InstrInfo::insertOutlinedCall(
+    Module &M, MachineBasicBlock &MBB, MachineBasicBlock::iterator &It,
+    MachineFunction &MF, bool IsTailCall) const {
+
+  // Are we tail calling?
+  if (IsTailCall) {
+    // If yes, then we can just branch to the label.
+    It = MBB.insert(It,
+                    BuildMI(MF, DebugLoc(), get(AArch64::B))
+                        .addGlobalAddress(M.getNamedValue(MF.getName())));
+    return It;
+  }
+
+  // We're not tail calling, so we have to save LR before the call and restore
+  // it after.
+  MachineInstr *STRXpre = BuildMI(MF, DebugLoc(), get(AArch64::STRXpre))
+                              .addReg(AArch64::SP, RegState::Define)
+                              .addReg(AArch64::LR)
+                              .addReg(AArch64::SP)
+                              .addImm(-16);
+  It = MBB.insert(It, STRXpre);
+  It++;
+
+  It = MBB.insert(It,
+                  BuildMI(MF, DebugLoc(), get(AArch64::BL))
+                      .addGlobalAddress(M.getNamedValue(MF.getName())));
+
+  It++;
+
+  // Restore the link register.
+  MachineInstr *LDRXpost = BuildMI(MF, DebugLoc(), get(AArch64::LDRXpost))
+                               .addReg(AArch64::SP, RegState::Define)
+                               .addReg(AArch64::LR)
+                               .addReg(AArch64::SP)
+                               .addImm(16);
+  It = MBB.insert(It, LDRXpost);
+
+  return It;
+}
+
