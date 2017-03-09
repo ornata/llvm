@@ -4284,15 +4284,17 @@ void InnerLoopVectorizer::fixFirstOrderRecurrence(PHINode *Phi) {
   auto *VecPhi = Builder.CreatePHI(VectorInit->getType(), 2, "vector.recur");
   VecPhi->addIncoming(VectorInit, LoopVectorPreHeader);
 
-  // Get the vectorized previous value. We ensured the previous values was an
-  // instruction when detecting the recurrence.
+  // Get the vectorized previous value.
   auto &PreviousParts = getVectorValue(Previous);
 
-  // Set the insertion point to be after this instruction. We ensured the
-  // previous value dominated all uses of the phi when detecting the
-  // recurrence.
-  Builder.SetInsertPoint(
-      &*++BasicBlock::iterator(cast<Instruction>(PreviousParts[UF - 1])));
+  // Set the insertion point after the previous value if it is an instruction.
+  // Note that the previous value may have been constant-folded so it is not
+  // guaranteed to be an instruction in the vector loop.
+  if (LI->getLoopFor(LoopVectorBody)->isLoopInvariant(PreviousParts[UF - 1]))
+    Builder.SetInsertPoint(&*LoopVectorBody->getFirstInsertionPt());
+  else
+    Builder.SetInsertPoint(
+        &*++BasicBlock::iterator(cast<Instruction>(PreviousParts[UF - 1])));
 
   // We will construct a vector for the recurrence by combining the values for
   // the current and previous iterations. This is the required shuffle mask.
@@ -5675,7 +5677,9 @@ void LoopVectorizationCostModel::collectLoopUniforms(unsigned VF) {
         continue;
       auto *OI = cast<Instruction>(OV);
       if (all_of(OI->users(), [&](User *U) -> bool {
-            return isOutOfScope(U) || Worklist.count(cast<Instruction>(U));
+            auto *J = cast<Instruction>(U);
+            return !TheLoop->contains(J) || Worklist.count(J) ||
+                   (OI == getPointerOperand(J) && isUniformDecision(J, VF));
           })) {
         Worklist.insert(OI);
         DEBUG(dbgs() << "LV: Found uniform instruction: " << *OI << "\n");

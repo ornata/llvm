@@ -195,24 +195,29 @@ LegalizerHelper::LegalizeResult LegalizerHelper::narrowScalar(MachineInstr &MI,
         continue;
       }
 
-      int64_t OpSegStart = DstStart - OpStart;
-      int64_t OpSegSize =
-          std::min(NarrowSize - OpSegStart, OpSegStart + OpSize);
-      unsigned OpSegReg = OpReg;
-      if (OpSegSize != OpSize) {
+      // OpSegStart is where this destination segment would start in OpReg if it
+      // extended infinitely in both directions.
+      int64_t ExtractOffset, InsertOffset, SegSize;
+      if (OpStart < DstStart) {
+        InsertOffset = 0;
+        ExtractOffset = DstStart - OpStart;
+        SegSize = std::min(NarrowSize, OpStart + OpSize - DstStart);
+      } else {
+        InsertOffset = OpStart - DstStart;
+        ExtractOffset = 0;
+        SegSize =
+            std::min(NarrowSize - InsertOffset, OpStart + OpSize - DstStart);
+      }
+
+      unsigned SegReg = OpReg;
+      if (ExtractOffset != 0 || SegSize != OpSize) {
         // A genuine extract is needed.
-        OpSegReg = MRI.createGenericVirtualRegister(LLT::scalar(OpSegSize));
-        MIRBuilder.buildExtract(OpSegReg, std::max(OpSegStart, (int64_t)0),
-                                OpReg);
+        SegReg = MRI.createGenericVirtualRegister(LLT::scalar(SegSize));
+        MIRBuilder.buildExtract(SegReg, OpReg, ExtractOffset);
       }
 
       unsigned DstReg = MRI.createGenericVirtualRegister(NarrowTy);
-      MIRBuilder.buildInstr(TargetOpcode::G_INSERT)
-          .addDef(DstReg)
-          .addUse(SrcRegs[i])
-          .addUse(OpSegReg)
-          .addImm(std::max((int64_t)0, -OpSegStart));
-
+      MIRBuilder.buildInsert(DstReg, SrcRegs[i], SegReg, InsertOffset);
       DstRegs.push_back(DstReg);
     }
 
@@ -531,6 +536,38 @@ LegalizerHelper::lower(MachineInstr &MI, unsigned TypeIdx, LLT Ty) {
     unsigned Zero = MRI.createGenericVirtualRegister(Ty);
     MIRBuilder.buildConstant(Zero, 0);
     MIRBuilder.buildICmp(CmpInst::ICMP_NE, Overflow, HiPart, Zero);
+    MI.eraseFromParent();
+    return Legalized;
+  }
+  case TargetOpcode::G_FNEG: {
+    // TODO: Handle vector types once we are able to
+    // represent them.
+    if (Ty.isVector())
+      return UnableToLegalize;
+    unsigned Res = MI.getOperand(0).getReg();
+    Type *ZeroTy;
+    LLVMContext &Ctx = MIRBuilder.getMF().getFunction()->getContext();
+    switch (Ty.getSizeInBits()) {
+    case 16:
+      ZeroTy = Type::getHalfTy(Ctx);
+      break;
+    case 32:
+      ZeroTy = Type::getFloatTy(Ctx);
+      break;
+    case 64:
+      ZeroTy = Type::getDoubleTy(Ctx);
+      break;
+    default:
+      llvm_unreachable("unexpected floating-point type");
+    }
+    ConstantFP &ZeroForNegation =
+        *cast<ConstantFP>(ConstantFP::getZeroValueForNegation(ZeroTy));
+    unsigned Zero = MRI.createGenericVirtualRegister(Ty);
+    MIRBuilder.buildFConstant(Zero, ZeroForNegation);
+    MIRBuilder.buildInstr(TargetOpcode::G_FSUB)
+        .addDef(Res)
+        .addUse(Zero)
+        .addUse(MI.getOperand(1).getReg());
     MI.eraseFromParent();
     return Legalized;
   }

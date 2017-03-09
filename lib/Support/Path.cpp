@@ -953,6 +953,13 @@ bool status_known(file_status s) {
   return s.type() != file_type::status_error;
 }
 
+file_type get_file_type(const Twine &Path, bool Follow) {
+  file_status st;
+  if (status(Path, st, Follow))
+    return file_type::status_error;
+  return st.type();
+}
+
 bool is_directory(file_status status) {
   return status.type() == file_type::directory_file;
 }
@@ -974,6 +981,18 @@ std::error_code is_regular_file(const Twine &path, bool &result) {
   if (std::error_code ec = status(path, st))
     return ec;
   result = is_regular_file(st);
+  return std::error_code();
+}
+
+bool is_symlink_file(file_status status) {
+  return status.type() == file_type::symlink_file;
+}
+
+std::error_code is_symlink_file(const Twine &path, bool &result) {
+  file_status st;
+  if (std::error_code ec = status(path, st, false))
+    return ec;
+  result = is_symlink_file(st);
   return std::error_code();
 }
 
@@ -1170,7 +1189,7 @@ std::error_code identify_magic(const Twine &Path, file_magic &Result) {
 }
 
 std::error_code directory_entry::status(file_status &result) const {
-  return fs::status(Path, result);
+  return fs::status(Path, result, FollowSymlinks);
 }
 
 } // end namespace fs

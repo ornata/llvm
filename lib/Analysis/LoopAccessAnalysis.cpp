@@ -498,7 +498,7 @@ class AccessAnalysis {
 public:
   /// \brief Read or write access location.
   typedef PointerIntPair<Value *, 1, bool> MemAccessInfo;
-  typedef SmallPtrSet<MemAccessInfo, 8> MemAccessInfoSet;
+  typedef SmallVector<MemAccessInfo, 8> MemAccessInfoList;
 
   AccessAnalysis(const DataLayout &Dl, AliasAnalysis *AA, LoopInfo *LI,
                  MemoryDepChecker::DepCandidates &DA,
@@ -550,7 +550,7 @@ public:
     DepChecker.clearDependences();
   }
 
-  MemAccessInfoSet &getDependenciesToCheck() { return CheckDeps; }
+  MemAccessInfoList &getDependenciesToCheck() { return CheckDeps; }
 
 private:
   typedef SetVector<MemAccessInfo> PtrAccessSet;
@@ -564,8 +564,8 @@ private:
 
   const DataLayout &DL;
 
-  /// Set of accesses that need a further dependence check.
-  MemAccessInfoSet CheckDeps;
+  /// List of accesses that need a further dependence check.
+  MemAccessInfoList CheckDeps;
 
   /// Set of pointers that are read only.
   SmallPtrSet<Value*, 16> ReadOnlyPtr;
@@ -822,7 +822,7 @@ void AccessAnalysis::processMemAccesses() {
           // there is no other write to the ptr - this is an optimization to
           // catch "a[i] = a[i] + " without having to do a dependence check).
           if ((IsWrite || IsReadOnlyPtr) && SetHasWrite) {
-            CheckDeps.insert(Access);
+            CheckDeps.push_back(Access);
             IsRTCheckAnalysisNeeded = true;
           }
 
@@ -1040,8 +1040,7 @@ static unsigned getAddressSpaceOperand(Value *I) {
 
 bool llvm::sortMemAccesses(ArrayRef<Value *> VL, const DataLayout &DL,
                            ScalarEvolution &SE,
-                           SmallVectorImpl<Value *> &Sorted,
-                           SmallVectorImpl<unsigned> *Mask) {
+                           SmallVectorImpl<Value *> &Sorted) {
   SmallVector<std::pair<int64_t, Value *>, 4> OffValPairs;
   OffValPairs.reserve(VL.size());
   Sorted.reserve(VL.size());
@@ -1051,6 +1050,7 @@ bool llvm::sortMemAccesses(ArrayRef<Value *> VL, const DataLayout &DL,
   Value *Ptr0 = getPointerOperand(VL[0]);
   const SCEV *Scev0 = SE.getSCEV(Ptr0);
   Value *Obj0 = GetUnderlyingObject(Ptr0, DL);
+
   for (auto *Val : VL) {
     // The only kind of access we care about here is load.
     if (!isa<LoadInst>(Val))
@@ -1077,30 +1077,14 @@ bool llvm::sortMemAccesses(ArrayRef<Value *> VL, const DataLayout &DL,
     OffValPairs.emplace_back(Diff->getAPInt().getSExtValue(), Val);
   }
 
-  SmallVector<unsigned, 4> UseOrder(VL.size());
-  for (unsigned i = 0; i < VL.size(); i++) {
-    UseOrder[i] = i;
-  }
-
-  // Sort the memory accesses and keep the order of their uses in UseOrder.
-  std::sort(UseOrder.begin(), UseOrder.end(),
-            [&OffValPairs](unsigned Left, unsigned Right) {
-              return OffValPairs[Left].first < OffValPairs[Right].first;
+  std::sort(OffValPairs.begin(), OffValPairs.end(),
+            [](const std::pair<int64_t, Value *> &Left,
+               const std::pair<int64_t, Value *> &Right) {
+              return Left.first < Right.first;
             });
 
-  for (unsigned i = 0; i < VL.size(); i++)
-    Sorted.emplace_back(OffValPairs[UseOrder[i]].second);
-
-  // Sort UseOrder to compute the Mask.
-  if (Mask) {
-    Mask->reserve(VL.size());
-    for (unsigned i = 0; i < VL.size(); i++)
-      Mask->emplace_back(i);
-    std::sort(Mask->begin(), Mask->end(),
-              [&UseOrder](unsigned Left, unsigned Right) {
-                return UseOrder[Left] < UseOrder[Right];
-              });
-  }
+  for (auto &it : OffValPairs)
+    Sorted.push_back(it.second);
 
   return true;
 }
@@ -1546,12 +1530,14 @@ MemoryDepChecker::isDependent(const MemAccessInfo &A, unsigned AIdx,
 }
 
 bool MemoryDepChecker::areDepsSafe(DepCandidates &AccessSets,
-                                   MemAccessInfoSet &CheckDeps,
+                                   MemAccessInfoList &CheckDeps,
                                    const ValueToValueMap &Strides) {
 
   MaxSafeDepDistBytes = -1;
-  while (!CheckDeps.empty()) {
-    MemAccessInfo CurAccess = *CheckDeps.begin();
+  SmallPtrSet<MemAccessInfo, 8> Visited;
+  for (MemAccessInfo CurAccess : CheckDeps) {
+    if (Visited.count(CurAccess))
+      continue;
 
     // Get the relevant memory access set.
     EquivalenceClasses<MemAccessInfo>::iterator I =
@@ -1565,7 +1551,7 @@ bool MemoryDepChecker::areDepsSafe(DepCandidates &AccessSets,
 
     // Check every access pair.
     while (AI != AE) {
-      CheckDeps.erase(*AI);
+      Visited.insert(*AI);
       EquivalenceClasses<MemAccessInfo>::member_iterator OI = std::next(AI);
       while (OI != AE) {
         // Check every accessing instruction pair in program order.

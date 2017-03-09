@@ -500,6 +500,8 @@ static std::error_code fillStatus(int StatRet, const struct stat &Status,
     Type = file_type::fifo_file;
   else if (S_ISSOCK(Status.st_mode))
     Type = file_type::socket_file;
+  else if (S_ISLNK(Status.st_mode))
+    Type = file_type::symlink_file;
 
   perms Perms = static_cast<perms>(Status.st_mode);
   Result =
@@ -510,12 +512,12 @@ static std::error_code fillStatus(int StatRet, const struct stat &Status,
   return std::error_code();
 }
 
-std::error_code status(const Twine &Path, file_status &Result) {
+std::error_code status(const Twine &Path, file_status &Result, bool Follow) {
   SmallString<128> PathStorage;
   StringRef P = Path.toNullTerminatedStringRef(PathStorage);
 
   struct stat Status;
-  int StatRet = ::stat(P.begin(), &Status);
+  int StatRet = (Follow ? ::stat : ::lstat)(P.begin(), &Status);
   return fillStatus(StatRet, Status, Result);
 }
 
@@ -616,7 +618,8 @@ int mapped_file_region::alignment() {
 }
 
 std::error_code detail::directory_iterator_construct(detail::DirIterState &it,
-                                                StringRef path){
+                                                     StringRef path,
+                                                     bool follow_symlinks) {
   SmallString<128> path_null(path);
   DIR *directory = ::opendir(path_null.c_str());
   if (!directory)
@@ -625,7 +628,7 @@ std::error_code detail::directory_iterator_construct(detail::DirIterState &it,
   it.IterationHandle = reinterpret_cast<intptr_t>(directory);
   // Add something for replace_filename to replace.
   path::append(path_null, ".");
-  it.CurrentEntry = directory_entry(path_null.str());
+  it.CurrentEntry = directory_entry(path_null.str(), follow_symlinks);
   return directory_iterator_increment(it);
 }
 
@@ -790,6 +793,46 @@ std::error_code getPathFromOpenFD(int FD, SmallVectorImpl<char> &ResultPath) {
   }
   ResultPath.set_size(static_cast<size_t>(CharCount));
 #endif
+  return std::error_code();
+}
+
+template <typename T>
+static std::error_code remove_directories_impl(const T &Entry,
+                                               bool IgnoreErrors) {
+  std::error_code EC;
+  directory_iterator Begin(Entry, EC, false);
+  directory_iterator End;
+  while (Begin != End) {
+    auto &Item = *Begin;
+    file_status st;
+    EC = Item.status(st);
+    if (EC && !IgnoreErrors)
+      return EC;
+
+    if (is_directory(st)) {
+      EC = remove_directories_impl(Item, IgnoreErrors);
+      if (EC && !IgnoreErrors)
+        return EC;
+    }
+
+    EC = fs::remove(Item.path(), true);
+    if (EC && !IgnoreErrors)
+      return EC;
+
+    Begin.increment(EC);
+    if (EC && !IgnoreErrors)
+      return EC;
+  }
+  return std::error_code();
+}
+
+std::error_code remove_directories(const Twine &path, bool IgnoreErrors) {
+  auto EC = remove_directories_impl(path, IgnoreErrors);
+  if (EC && !IgnoreErrors)
+    return EC;
+  EC = fs::remove(path, true);
+  if (EC && !IgnoreErrors)
+    return EC;
   return std::error_code();
 }
 

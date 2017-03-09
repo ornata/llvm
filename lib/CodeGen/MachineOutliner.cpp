@@ -308,7 +308,7 @@ private:
   ArrayRef<unsigned> Str;
 
   /// Maintains each node in the tree.
-  BumpPtrAllocator NodeAllocator;
+  SpecificBumpPtrAllocator<SuffixTreeNode> NodeAllocator;
 
   /// The root of the suffix tree.
   ///
@@ -360,10 +360,10 @@ private:
 
     assert(StartIdx <= LeafEndIdx && "String can't start after it ends!");
 
-    SuffixTreeNode *N = new (NodeAllocator) SuffixTreeNode(StartIdx, 
-                                                           &LeafEndIdx,
-                                                           nullptr,
-                                                           &Parent);
+    SuffixTreeNode *N = new (NodeAllocator.Allocate()) SuffixTreeNode(StartIdx, 
+                                                                   &LeafEndIdx,
+                                                                       nullptr,
+                                                                      &Parent);
     Parent.Children[Edge] = N;
 
     return N;
@@ -385,10 +385,10 @@ private:
     "Non-root internal nodes must have parents!");
 
     size_t *E = new (InternalEndIdxAllocator) size_t(EndIdx);
-    SuffixTreeNode *N = new (NodeAllocator) SuffixTreeNode(StartIdx,
-                                                           E,
-                                                           Root,
-                                                           Parent);
+    SuffixTreeNode *N = new (NodeAllocator.Allocate()) SuffixTreeNode(StartIdx,
+                                                                      E,
+                                                                      Root,
+                                                                      Parent);
     if (Parent)
       Parent->Children[Edge] = N;
 
