@@ -565,50 +565,6 @@ private:
     return SuffixesToAdd;
   }
 
-  /// \brief Return the start index and length of a string which maximizes a
-  /// benefit function by traversing the tree depth-first.
-  ///
-  /// Helper function for \p bestRepeatedSubstring.
-  ///
-  /// \param CurrNode The node currently being visited.
-  /// \param CurrLen Length of the current string.
-  /// \param[out] BestLen Length of the most beneficial substring.
-  /// \param[out] MaxBenefit Benefit of the most beneficial substring.
-  /// \param[out] BestStartIdx Start index of the most beneficial substring.
-  /// \param BenefitFn The function the query should return a maximum string
-  /// for.
-  void findBest(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &BestLen,
-                size_t &MaxBenefit, size_t &BestStartIdx,
-                const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)>
-                &BenefitFn) {
-
-    if (!CurrNode.IsInTree)
-      return;
-
-    // Can we traverse further down the tree?
-    if (!CurrNode.isLeaf()) {
-      // If yes, continue the traversal.
-      for (auto &ChildPair : CurrNode.Children) {
-        if (ChildPair.second && ChildPair.second->IsInTree)
-          findBest(*ChildPair.second, CurrLen + ChildPair.second->size(),
-                   BestLen, MaxBenefit, BestStartIdx, BenefitFn);
-      }
-    } else {
-      // We hit a leaf.
-      size_t StringLen = CurrLen - CurrNode.size();
-      unsigned Benefit = BenefitFn(CurrNode, StringLen);
-
-      // Did we do better than in the last step?
-      if (Benefit <= MaxBenefit)
-        return;
-
-      // We did better, so update the best string.
-      MaxBenefit = Benefit;
-      BestStartIdx = CurrNode.SuffixIdx;
-      BestLen = StringLen;
-    }
-  }
-
 void findAllBeneficial(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &MaxLen,
                 const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)>
                 &BenefitFn,
@@ -627,6 +583,10 @@ void findAllBeneficial(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &MaxLen,
       continue;
 
     size_t StringLen = Leaf->ConcatLen - Leaf->size();
+    if (Parent->ConcatLen != StringLen) {
+      errs() << StringLen << "!= " << Parent->ConcatLen << "\n";
+    }
+
     unsigned Benefit = BenefitFn(*Leaf, StringLen);
 
     if (Benefit < 1)
@@ -653,67 +613,13 @@ void findAllBeneficial(SuffixTreeNode &CurrNode, size_t CurrLen, size_t &MaxLen,
     for (unsigned i = Leaf->SuffixIdx; i < Leaf->SuffixIdx + StringLen; i++)
       CandidateSequence.push_back(Str[i]);
 
-    FunctionList.emplace_back(FnIdx, OccurrenceCount, CandidateSequence, Benefit, false);
+    FunctionList.emplace_back(FnIdx, OccurrenceCount, CandidateSequence,
+                              Benefit, false);
 
     // Move to the next function.
     FnIdx++;
     Parent->IsInTree = false;
   }
-   /*
-    if (!CurrNode.IsInTree)
-      return;
-
-    // Can we traverse further down the tree?
-    if (!CurrNode.isLeaf()) {
-      // If yes, continue the traversal.
-      for (auto &ChildPair : CurrNode.Children) {
-        if (ChildPair.second && ChildPair.second->IsInTree)
-          findAllBeneficial(*ChildPair.second, CurrLen + ChildPair.second->size(), MaxLen, BenefitFn, CandidateList, FunctionList, FnIdx);
-      }
-    } else {
-      // We hit a leaf.
-      size_t StringLen = CurrLen - CurrNode.size();
-      errs() << "StringLen = " << StringLen << "\n";
-      errs() << "ConcatLen = " << CurrNode.ConcatLen - CurrNode.size() << "\n";
-      assert(StringLen == CurrNode.ConcatLen - CurrNode.size() && "SL != CL"); 
-      unsigned Benefit = BenefitFn(CurrNode, StringLen);
-
-      // Is it beneficial?
-      if (Benefit < 1)
-        return;
-
-      if (StringLen > MaxLen)
-        MaxLen = StringLen;
-
-      // It is, so store all of its occurrences in the candidate list.
-      SuffixTreeNode *Parent = CurrNode.Parent;
-
-      for (auto &ChildPair : Parent->Children) {
-        SuffixTreeNode *M = ChildPair.second;
-
-        // Is it a leaf? If so, we have an occurrence of this candidate.
-        if (M && M->IsInTree && M->isLeaf()) {
-          CandidateList.emplace_back(M->SuffixIdx, StringLen, FnIdx);
-          CandidateList.back().dump();
-          size_t StartIdx = M->SuffixIdx;
-          for (size_t i = 0; i < StringLen; i++) {
-            errs() << Str[StartIdx + i] << " ";
-          }
-          errs() << "\n";
-          M->IsInTree = false;
-        }
-      }
-
-      std::vector<unsigned> CandidateSequence;
-      for (unsigned i = CurrNode.SuffixIdx; i < CurrNode.SuffixIdx + StringLen; i++)
-        CandidateSequence.push_back(Str[i]);
-
-      FunctionList.emplace_back(FnIdx, Parent->OccurrenceCount, CandidateSequence, Benefit, false);
-
-      // Move to the next function.
-      FnIdx++;
-    }
-    */
 }
 
 public:
@@ -722,219 +628,19 @@ public:
     return Str[i];
   }
 
-  /// \brief Return a substring of the tree with maximum benefit if such a
-  /// substring exists.
-  ///
-  /// Clears the input vector and fills it with a maximum substring or empty.
-  ///
-  /// \param[in,out] Best The most beneficial substring in the tree. Empty
-  /// if it does not exist.
-  /// \param BenefitFn The function the query should return a maximum string
-  /// for.
-  void bestRepeatedSubstring(std::vector<unsigned> &Best,
-                 const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)>
-                 &BenefitFn) {
-    Best.clear();
-    size_t Length = 0;   // Becomes the length of the best substring.
-    size_t Benefit = 0;  // Becomes the benefit of the best substring.
-    size_t StartIdx = 0; // Becomes the start index of the best substring.
-    findBest(*Root, 0, Length, Benefit, StartIdx, BenefitFn);
 
-    for (size_t Idx = 0; Idx < Length; Idx++)
-      Best.push_back(Str[Idx + StartIdx]);
-  }
-
-  unsigned findAllCandidates(std::vector<Candidate> &CandidateList, std::vector<OutlinedFunction> &FunctionList, const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)> &BenefitFn) {
+  unsigned findAllCandidates(std::vector<Candidate> &CandidateList,
+  std::vector<OutlinedFunction> &FunctionList,
+  const std::function<unsigned(SuffixTreeNode &, size_t CurrLen)> &BenefitFn) {
     CandidateList.clear();
+
     size_t MaxLen = 0;
     size_t FnIdx = 0;
-    findAllBeneficial(*Root, 0, MaxLen, BenefitFn, CandidateList, FunctionList, FnIdx);
+
+    findAllBeneficial(*Root, 0, MaxLen, BenefitFn, CandidateList, FunctionList,
+                      FnIdx);
+
     return MaxLen;
-  }
-
-  /// Perform a depth-first search for \p QueryString on the suffix tree.
-  ///
-  /// \param QueryString The string to search for.
-  /// \param CurrIdx The current index in \p QueryString that is being matched
-  /// against.
-  /// \param CurrNode The suffix tree node being searched in.
-  ///
-  /// \returns A \p SuffixTreeNode that \p QueryString appears in if such a
-  /// node exists, and \p nullptr otherwise.
-  SuffixTreeNode *findString(const std::vector<unsigned> &QueryString,
-                             size_t &CurrIdx, SuffixTreeNode *CurrNode) {
-
-    // The search ended at a nonexistent or pruned node. Quit.
-    if (!CurrNode || !CurrNode->IsInTree)
-      return nullptr;
-
-    unsigned Edge = QueryString[CurrIdx]; // The edge we want to move on.
-    SuffixTreeNode *NextNode = CurrNode->Children[Edge]; // Next node in query.
-
-    if (CurrNode->isRoot()) {
-      // If we're at the root we have to check if there's a child, and move to
-      // that child. Don't consume the character since \p Root represents the
-      // empty string.
-      if (NextNode && NextNode->IsInTree)
-        return findString(QueryString, CurrIdx, NextNode);
-      return nullptr;
-    }
-
-    size_t StrIdx = CurrNode->StartIdx;
-    size_t MaxIdx = QueryString.size();
-    bool ContinueSearching = false;
-
-    // Match as far as possible into the string. If there's a mismatch, quit.
-    for (; CurrIdx < MaxIdx; CurrIdx++, StrIdx++) {
-      Edge = QueryString[CurrIdx];
-
-      // We matched perfectly, but still have a remainder to search.
-      if (StrIdx > *(CurrNode->EndIdx)) {
-        ContinueSearching = true;
-        break;
-      }
-
-      if (Edge != Str[StrIdx])
-        return nullptr;
-    }
-
-    NextNode = CurrNode->Children[Edge];
-
-    // Move to the node which matches what we're looking for and continue
-    // searching.
-    if (ContinueSearching)
-      return findString(QueryString, CurrIdx, NextNode);
-
-    // We matched perfectly so we're done.
-    return CurrNode;
-  }
-
-  /// \brief Remove a node from a tree and all nodes representing proper
-  /// suffixes of that node's string.
-  ///
-  /// This is used in the outlining algorithm to reduce the number of
-  /// overlapping candidates
-  ///
-  /// \param N The suffix tree node to start pruning from.
-  /// \param Len The length of the string to be pruned.
-  ///
-  /// \returns True if this candidate didn't overlap with a previously chosen
-  /// candidate.
-  bool prune(SuffixTreeNode *N, size_t Len) {
-
-    bool NoOverlap = true;
-    std::vector<unsigned> IndicesToPrune;
-
-    // Look at each of N's children.
-    for (auto &ChildPair : N->Children) {
-      SuffixTreeNode *M = ChildPair.second;
-
-      // Is this a leaf child?
-      if (M && M->IsInTree && M->isLeaf()) {
-        // Save each leaf child's suffix indices and remove them from the tree.
-        IndicesToPrune.push_back(M->SuffixIdx);
-        M->IsInTree = false;
-      }
-    }
-
-    // Remove each suffix we have to prune from the tree. Each of these will be
-    // I + some offset for I in IndicesToPrune and some offset < Len.
-    unsigned Offset = 1;
-    for (unsigned CurrentSuffix = 1; CurrentSuffix < Len; CurrentSuffix++) {
-      for (unsigned I : IndicesToPrune) {
-
-        unsigned PruneIdx = I + Offset;
-
-        // Is this index actually in the string?
-        if (PruneIdx < LeafVector.size()) {
-          // If yes, we have to try and prune it.
-          // Was the current leaf already pruned by another candidate?
-          if (LeafVector[PruneIdx]->IsInTree) {
-            // If not, prune it.
-            LeafVector[PruneIdx]->IsInTree = false;
-          } else {
-            // If yes, signify that we've found an overlap, but keep pruning.
-            NoOverlap = false;
-          }
-
-          // Update the parent of the current leaf's occurrence count.
-          SuffixTreeNode *Parent = LeafVector[PruneIdx]->Parent;
-
-          // Is the parent still in the tree?
-          if (Parent->OccurrenceCount > 0) {
-            Parent->OccurrenceCount--;
-            Parent->IsInTree = (Parent->OccurrenceCount > 1);
-          }
-        }
-      }
-
-      // Move to the next character in the string.
-      Offset++;
-    }
-
-    // We know we can never outline anything which starts one index back from
-    // the indices we want to outline. This is because our minimum outlining
-    // length is always 2.
-    for (unsigned I : IndicesToPrune) {
-      if (I > 0) {
-
-        unsigned PruneIdx = I-1;
-        SuffixTreeNode *Parent = LeafVector[PruneIdx]->Parent;
-
-        // Was the leaf one index back from I already pruned?
-        if (LeafVector[PruneIdx]->IsInTree) {
-          // If not, prune it.
-          LeafVector[PruneIdx]->IsInTree = false;
-        } else {
-          // If yes, signify that we've found an overlap, but keep pruning.
-          NoOverlap = false;
-        }
-
-        // Update the parent of the current leaf's occurrence count.
-        if (Parent->OccurrenceCount > 0) {
-          Parent->OccurrenceCount--;
-          Parent->IsInTree = (Parent->OccurrenceCount > 1);
-        }
-      }
-    }
-
-    // Finally, remove N from the tree and set its occurrence count to 0.
-    N->IsInTree = false;
-    N->OccurrenceCount = 0;
-
-    return NoOverlap;
-  }
-
-  /// \brief Find each occurrence of of a string in \p QueryString and prune
-  /// their nodes.
-  ///
-  /// \param QueryString The string to search for.
-  /// \param[out] Occurrences The start indices of each occurrence.
-  ///
-  /// \returns Whether or not the occurrence overlaps with a previous candidate.
-  bool findOccurrencesAndPrune(const std::vector<unsigned> &QueryString,
-                               std::vector<size_t> &Occurrences) {
-    size_t Dummy = 0;
-    SuffixTreeNode *N = findString(QueryString, Dummy, Root);
-
-    if (!N || !N->IsInTree)
-      return false;
-
-    // If this is an internal node, occurrences are the number of leaf children
-    // of the node.
-    for (auto &ChildPair : N->Children) {
-      SuffixTreeNode *M = ChildPair.second;
-
-      // Is it a leaf? If so, we have an occurrence.
-      if (M && M->IsInTree && M->isLeaf())
-        Occurrences.push_back(M->SuffixIdx);
-    }
-
-    // If we're in a leaf, then this node is the only occurrence.
-    if (N->isLeaf())
-      Occurrences.push_back(N->SuffixIdx);
-
-    return prune(N, QueryString.size());
   }
 
   /// Construct a suffix tree from a sequence of unsigned integers.
@@ -1297,8 +1003,8 @@ void MachineOutliner::pruneOverlaps(std::vector<Candidate> &CandidateList,
           dbgs() << "--- C2 :[" << C2.StartIdx << ", " << C2End << "]\n";
         );
 
-
       // Choose the better of C1 and C2 to keep.
+      // What happens if we choose the worse of the two to keep?
       if (C1.Benefit >= C2.Benefit) {
         // Update the function's occurrence count and benefit to reflec that C2
         // is being removed.
@@ -1380,60 +1086,6 @@ MachineOutliner::buildCandidateList(std::vector<Candidate> &CandidateList,
     bool CanBeTailCall = Mapper.ReturnIDs.count(OF.Sequence.back());
     OF.IsTailCall = CanBeTailCall;
   }
-
-  // Repeatedly query the suffix tree for the substring that maximizes
-  // BenefitFn. Find the occurrences of that string, prune the tree, and store
-  // each occurrence as a candidate.
-  /*
-  for (ST.bestRepeatedSubstring(CandidateSequence, BenefitFn);
-       CandidateSequence.size() > 1;
-       ST.bestRepeatedSubstring(CandidateSequence, BenefitFn)) {
-
-    std::vector<size_t> Occurrences;
-
-    bool GotNonOverlappingCandidate =
-        ST.findOccurrencesAndPrune(CandidateSequence, Occurrences);
-
-    // Is the candidate we found known to overlap with something we already
-    // outlined?
-    if (!GotNonOverlappingCandidate)
-      continue;
-
-    // Is this candidate the longest so far?
-    if (CandidateSequence.size() > MaxCandidateLen)
-      MaxCandidateLen = CandidateSequence.size();
-
-    bool CanBeTailCall = Mapper.ReturnIDs.count(CandidateSequence.back());
-
-    // Keep track of the benefit of outlining this candidate in its
-    // OutlinedFunction.
-    unsigned FnBenefit = TII.getOutliningBenefit(CandidateSequence.size(),
-                                                 Occurrences.size(),
-                                                 CanBeTailCall
-                                                 );
-
-    assert(FnBenefit > 0 && "Function cannot be unbeneficial!");
-
-    // Save an OutlinedFunction for this candidate.
-    FunctionList.emplace_back(
-        FunctionList.size(), // Number of this function.
-        Occurrences.size(),  // Number of occurrences.
-        CandidateSequence,   // Sequence to outline.
-        FnBenefit,           // Instructions saved by outlining this function.
-        CanBeTailCall
-        );
-
-    // Save each of the occurrences of the candidate so we can outline them.
-    for (size_t &Occ : Occurrences)
-      CandidateList.emplace_back(
-          Occ,                      // Starting idx in that MBB.
-          CandidateSequence.size(), // Candidate length.
-          FunctionList.size() - 1   // Idx of the corresponding function.
-          );
-
-    FunctionsCreated++;
-  }
-  */
 
   // Sort the candidates in decending order. This will simplify the outlining
   // process when we have to remove the candidates from the mapping by
