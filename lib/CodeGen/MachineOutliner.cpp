@@ -1004,7 +1004,6 @@ void MachineOutliner::pruneOverlaps(std::vector<Candidate> &CandidateList,
         );
 
       // Choose the better of C1 and C2 to keep.
-      // What happens if we choose the worse of the two to keep?
       if (C1.Benefit >= C2.Benefit) {
         // Update the function's occurrence count and benefit to reflec that C2
         // is being removed.
