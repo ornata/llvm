@@ -567,7 +567,6 @@ public:
                      MachineBasicBlock::iterator &It,
                      MachineFunction &MF,
                      bool IsTailCall) const override;
-
 protected:
   /// Commutes the operands in the given instruction by changing the operands
   /// order and/or changing the instruction's opcode and/or the immediate value

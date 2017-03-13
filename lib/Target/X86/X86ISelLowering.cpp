@@ -5308,8 +5308,8 @@ static bool getTargetConstantBitsFromNode(SDValue Op, unsigned EltSizeInBits,
   };
 
   // Collect constant bits and insert into mask/undef bit masks.
-  auto CollectConstantBits = [SizeInBits](const Constant *Cst, APInt &Mask,
-                                          APInt &Undefs, unsigned BitOffset) {
+  auto CollectConstantBits = [](const Constant *Cst, APInt &Mask, APInt &Undefs,
+                                unsigned BitOffset) {
     if (!Cst)
       return false;
     unsigned CstSizeInBits = Cst->getType()->getPrimitiveSizeInBits();
@@ -5318,12 +5318,11 @@ static bool getTargetConstantBitsFromNode(SDValue Op, unsigned EltSizeInBits,
       return true;
     }
     if (auto *CInt = dyn_cast<ConstantInt>(Cst)) {
-      Mask |= CInt->getValue().zextOrTrunc(SizeInBits).shl(BitOffset);
+      Mask.insertBits(CInt->getValue(), BitOffset);
       return true;
     }
     if (auto *CFP = dyn_cast<ConstantFP>(Cst)) {
-      APInt CstBits = CFP->getValueAPF().bitcastToAPInt();
-      Mask |= CstBits.zextOrTrunc(SizeInBits).shl(BitOffset);
+      Mask.insertBits(CFP->getValueAPF().bitcastToAPInt(), BitOffset);
       return true;
     }
     return false;
@@ -5340,7 +5339,7 @@ static bool getTargetConstantBitsFromNode(SDValue Op, unsigned EltSizeInBits,
       }
       auto *Cst = cast<ConstantSDNode>(Src);
       APInt Bits = Cst->getAPIntValue().zextOrTrunc(SrcEltSizeInBits);
-      MaskBits |= Bits.zext(SizeInBits).shl(BitOffset);
+      MaskBits.insertBits(Bits, BitOffset);
     }
     return SplitBitData();
   }
@@ -13936,7 +13935,33 @@ X86TargetLowering::LowerEXTRACT_VECTOR_ELT(SDValue Op,
     if (SDValue Res = LowerEXTRACT_VECTOR_ELT_SSE4(Op, DAG))
       return Res;
 
-  // TODO: handle v16i8.
+  // TODO: We only extract a single element from v16i8, we can probably afford
+  // to be more aggressive here before using the default approach of spilling to
+  // stack.
+  if (VT.getSizeInBits() == 8 && Op->isOnlyUserOf(Vec.getNode())) {
+    // Extract either the lowest i32 or any i16, and extract the sub-byte.
+    int DWordIdx = IdxVal / 4;
+    if (DWordIdx == 0) {
+      SDValue Res = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, MVT::i32,
+                                DAG.getBitcast(MVT::v4i32, Vec),
+                                DAG.getIntPtrConstant(DWordIdx, dl));
+      int ShiftVal = (IdxVal % 4) * 8;
+      if (ShiftVal != 0)
+        Res = DAG.getNode(ISD::SRL, dl, MVT::i32, Res,
+                          DAG.getConstant(ShiftVal, dl, MVT::i32));
+      return DAG.getNode(ISD::TRUNCATE, dl, VT, Res);
+    }
+
+    int WordIdx = IdxVal / 2;
+    SDValue Res = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, MVT::i16,
+                              DAG.getBitcast(MVT::v8i16, Vec),
+                              DAG.getIntPtrConstant(WordIdx, dl));
+    int ShiftVal = (IdxVal % 2) * 8;
+    if (ShiftVal != 0)
+      Res = DAG.getNode(ISD::SRL, dl, MVT::i16, Res,
+                        DAG.getConstant(ShiftVal, dl, MVT::i16));
+    return DAG.getNode(ISD::TRUNCATE, dl, VT, Res);
+  }
 
   if (VT.getSizeInBits() == 32) {
     if (IdxVal == 0)
@@ -19829,6 +19854,28 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget &Subtarget
   }
 }
 
+static SDValue getAVX2GatherNode(unsigned Opc, SDValue Op, SelectionDAG &DAG,
+                                 SDValue Src, SDValue Mask, SDValue Base,
+                                 SDValue Index, SDValue ScaleOp, SDValue Chain,
+                                 const X86Subtarget &Subtarget) {
+  SDLoc dl(Op);
+  auto *C = cast<ConstantSDNode>(ScaleOp);
+  SDValue Scale = DAG.getTargetConstant(C->getZExtValue(), dl, MVT::i8);
+  EVT MaskVT = Mask.getValueType();
+  SDVTList VTs = DAG.getVTList(Op.getValueType(), MaskVT, MVT::Other);
+  SDValue Disp = DAG.getTargetConstant(0, dl, MVT::i32);
+  SDValue Segment = DAG.getRegister(0, MVT::i32);
+  // If source is undef or we know it won't be used, use a zero vector
+  // to break register dependency.
+  // TODO: use undef instead and let ExeDepsFix deal with it?
+  if (Src.isUndef() || ISD::isBuildVectorAllOnes(Mask.getNode()))
+    Src = getZeroVector(Op.getSimpleValueType(), Subtarget, DAG, dl);
+  SDValue Ops[] = {Src, Base, Scale, Index, Disp, Segment, Mask, Chain};
+  SDNode *Res = DAG.getMachineNode(Opc, dl, VTs, Ops);
+  SDValue RetOps[] = { SDValue(Res, 0), SDValue(Res, 2) };
+  return DAG.getMergeValues(RetOps, dl);
+}
+
 static SDValue getGatherNode(unsigned Opc, SDValue Op, SelectionDAG &DAG,
                               SDValue Src, SDValue Mask, SDValue Base,
                               SDValue Index, SDValue ScaleOp, SDValue Chain,
@@ -19843,7 +19890,10 @@ static SDValue getGatherNode(unsigned Opc, SDValue Op, SelectionDAG &DAG,
   SDVTList VTs = DAG.getVTList(Op.getValueType(), MaskVT, MVT::Other);
   SDValue Disp = DAG.getTargetConstant(0, dl, MVT::i32);
   SDValue Segment = DAG.getRegister(0, MVT::i32);
-  if (Src.isUndef())
+  // If source is undef or we know it won't be used, use a zero vector
+  // to break register dependency.
+  // TODO: use undef instead and let ExeDepsFix deal with it?
+  if (Src.isUndef() || ISD::isBuildVectorAllOnes(VMask.getNode()))
     Src = getZeroVector(Op.getSimpleValueType(), Subtarget, DAG, dl);
   SDValue Ops[] = {Src, VMask, Base, Scale, Index, Disp, Segment, Chain};
   SDNode *Res = DAG.getMachineNode(Opc, dl, VTs, Ops);
@@ -19882,7 +19932,6 @@ static SDValue getPrefetchNode(unsigned Opc, SDValue Op, SelectionDAG &DAG,
   MVT MaskVT =
     MVT::getVectorVT(MVT::i1, Index.getSimpleValueType().getVectorNumElements());
   SDValue VMask = getMaskNode(Mask, MaskVT, Subtarget, DAG, dl);
-  //SDVTList VTs = DAG.getVTList(MVT::Other);
   SDValue Ops[] = {VMask, Base, Scale, Index, Disp, Segment, Chain};
   SDNode *Res = DAG.getMachineNode(Opc, dl, MVT::Other, Ops);
   return SDValue(Res, 0);
@@ -20154,6 +20203,16 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget &Subtarget,
     return DAG.getNode(ISD::MERGE_VALUES, dl, Op->getVTList(), Result, isValid,
                        SDValue(Result.getNode(), 2));
   }
+  case GATHER_AVX2: {
+    SDValue Chain = Op.getOperand(0);
+    SDValue Src   = Op.getOperand(2);
+    SDValue Base  = Op.getOperand(3);
+    SDValue Index = Op.getOperand(4);
+    SDValue Mask  = Op.getOperand(5);
+    SDValue Scale = Op.getOperand(6);
+    return getAVX2GatherNode(IntrData->Opc0, Op, DAG, Src, Mask, Base, Index,
+                             Scale, Chain, Subtarget);
+  }
   case GATHER: {
   //gather(v1, mask, index, base, scale);
     SDValue Chain = Op.getOperand(0);
@@ -20179,8 +20238,9 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget &Subtarget,
   case PREFETCH: {
     SDValue Hint = Op.getOperand(6);
     unsigned HintVal = cast<ConstantSDNode>(Hint)->getZExtValue();
-    assert(HintVal < 2 && "Wrong prefetch hint in intrinsic: should be 0 or 1");
-    unsigned Opcode = (HintVal ? IntrData->Opc1 : IntrData->Opc0);
+    assert((HintVal == 1 || HintVal == 2) &&
+           "Wrong prefetch hint in intrinsic: should be 1 or 2");
+    unsigned Opcode = (HintVal != 1 ? IntrData->Opc1 : IntrData->Opc0);
     SDValue Chain = Op.getOperand(0);
     SDValue Mask  = Op.getOperand(2);
     SDValue Index = Op.getOperand(3);
@@ -33892,48 +33952,12 @@ static SDValue combineGatherScatter(SDNode *N, SelectionDAG &DAG) {
   return SDValue();
 }
 
-/// Materialize "setb reg" as "sbb reg,reg", since it produces an all-ones bit
-/// which is more useful than 0/1 in some cases.
-static SDValue materializeSBB(SDNode *N, SDValue EFLAGS, SelectionDAG &DAG) {
-  SDLoc DL(N);
-  // "Condition code B" is also known as "the carry flag" (CF).
-  SDValue CF = DAG.getConstant(X86::COND_B, DL, MVT::i8);
-  SDValue SBB = DAG.getNode(X86ISD::SETCC_CARRY, DL, MVT::i8, CF, EFLAGS);
-  MVT VT = N->getSimpleValueType(0);
-  if (VT == MVT::i8)
-    return DAG.getNode(ISD::AND, DL, VT, SBB, DAG.getConstant(1, DL, VT));
-
-  assert(VT == MVT::i1 && "Unexpected type for SETCC node");
-  return DAG.getNode(ISD::TRUNCATE, DL, MVT::i1, SBB);
-}
-
 // Optimize  RES = X86ISD::SETCC CONDCODE, EFLAG_INPUT
 static SDValue combineX86SetCC(SDNode *N, SelectionDAG &DAG,
                                const X86Subtarget &Subtarget) {
   SDLoc DL(N);
   X86::CondCode CC = X86::CondCode(N->getConstantOperandVal(0));
   SDValue EFLAGS = N->getOperand(1);
-
-  if (CC == X86::COND_A) {
-    // Try to convert COND_A into COND_B in an attempt to facilitate
-    // materializing "setb reg".
-    //
-    // Do not flip "e > c", where "c" is a constant, because Cmp instruction
-    // cannot take an immediate as its first operand.
-    //
-    if (EFLAGS.getOpcode() == X86ISD::SUB && EFLAGS.hasOneUse() &&
-        EFLAGS.getValueType().isInteger() &&
-        !isa<ConstantSDNode>(EFLAGS.getOperand(1))) {
-      SDValue NewSub = DAG.getNode(X86ISD::SUB, SDLoc(EFLAGS),
-                                   EFLAGS.getNode()->getVTList(),
-                                   EFLAGS.getOperand(1), EFLAGS.getOperand(0));
-      SDValue NewEFLAGS = SDValue(NewSub.getNode(), EFLAGS.getResNo());
-      return materializeSBB(N, NewEFLAGS, DAG);
-    }
-  }
-
-  if (CC == X86::COND_B)
-    return materializeSBB(N, EFLAGS, DAG);
 
   // Try to simplify the EFLAGS and condition code operands.
   if (SDValue Flags = combineSetCCEFLAGS(EFLAGS, CC, DAG))
@@ -34129,6 +34153,21 @@ static SDValue combineADC(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
+/// Materialize "setb reg" as "sbb reg,reg", since it produces an all-ones bit
+/// which is more useful than 0/1 in some cases.
+static SDValue materializeSBB(SDNode *N, SDValue EFLAGS, SelectionDAG &DAG) {
+  SDLoc DL(N);
+  // "Condition code B" is also known as "the carry flag" (CF).
+  SDValue CF = DAG.getConstant(X86::COND_B, DL, MVT::i8);
+  SDValue SBB = DAG.getNode(X86ISD::SETCC_CARRY, DL, MVT::i8, CF, EFLAGS);
+  MVT VT = N->getSimpleValueType(0);
+  if (VT == MVT::i8)
+    return DAG.getNode(ISD::AND, DL, VT, SBB, DAG.getConstant(1, DL, VT));
+
+  assert(VT == MVT::i1 && "Unexpected type for SETCC node");
+  return DAG.getNode(ISD::TRUNCATE, DL, MVT::i1, SBB);
+}
+
 /// If this is an add or subtract where one operand is produced by a cmp+setcc,
 /// then try to convert it to an ADC or SBB. This replaces TEST+SET+{ADD/SUB}
 /// with CMP+{ADC, SBB}.
@@ -34156,7 +34195,42 @@ static SDValue combineAddOrSubToADCOrSBB(SDNode *N, SelectionDAG &DAG) {
   if (Y.getOpcode() != X86ISD::SETCC || !Y.hasOneUse())
     return SDValue();
 
+  SDLoc DL(N);
+  EVT VT = N->getValueType(0);
   X86::CondCode CC = (X86::CondCode)Y.getConstantOperandVal(0);
+
+  if (CC == X86::COND_B) {
+    // X + SETB Z --> X + (mask SBB Z, Z)
+    // X - SETB Z --> X - (mask SBB Z, Z)
+    // TODO: Produce ADC/SBB here directly and avoid SETCC_CARRY?
+    SDValue SBB = materializeSBB(Y.getNode(), Y.getOperand(1), DAG);
+    if (SBB.getValueSizeInBits() != VT.getSizeInBits())
+      SBB = DAG.getZExtOrTrunc(SBB, DL, VT);
+    return DAG.getNode(IsSub ? ISD::SUB : ISD::ADD, DL, VT, X, SBB);
+  }
+
+  if (CC == X86::COND_A) {
+    SDValue EFLAGS = Y->getOperand(1);
+    // Try to convert COND_A into COND_B in an attempt to facilitate
+    // materializing "setb reg".
+    //
+    // Do not flip "e > c", where "c" is a constant, because Cmp instruction
+    // cannot take an immediate as its first operand.
+    //
+    if (EFLAGS.getOpcode() == X86ISD::SUB && EFLAGS.hasOneUse() &&
+        EFLAGS.getValueType().isInteger() &&
+        !isa<ConstantSDNode>(EFLAGS.getOperand(1))) {
+      SDValue NewSub = DAG.getNode(X86ISD::SUB, SDLoc(EFLAGS),
+                                   EFLAGS.getNode()->getVTList(),
+                                   EFLAGS.getOperand(1), EFLAGS.getOperand(0));
+      SDValue NewEFLAGS = SDValue(NewSub.getNode(), EFLAGS.getResNo());
+      SDValue SBB = materializeSBB(Y.getNode(), NewEFLAGS, DAG);
+      if (SBB.getValueSizeInBits() != VT.getSizeInBits())
+        SBB = DAG.getZExtOrTrunc(SBB, DL, VT);
+      return DAG.getNode(IsSub ? ISD::SUB : ISD::ADD, DL, VT, X, SBB);
+    }
+  }
+
   if (CC != X86::COND_E && CC != X86::COND_NE)
     return SDValue();
 
@@ -34165,9 +34239,6 @@ static SDValue combineAddOrSubToADCOrSBB(SDNode *N, SelectionDAG &DAG) {
       !X86::isZeroNode(Cmp.getOperand(1)) ||
       !Cmp.getOperand(0).getValueType().isInteger())
     return SDValue();
-
-  SDLoc DL(N);
-  EVT VT = N->getValueType(0);
 
   // (cmp Z, 1) sets the carry flag if Z is 0.
   SDValue Z = Cmp.getOperand(0);

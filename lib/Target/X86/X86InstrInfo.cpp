@@ -6325,6 +6325,7 @@ static unsigned CopyToFromAsymmetricReg(unsigned &DestReg, unsigned &SrcReg,
       return X86::KMOVWrk;
     }
     if (X86::GR8RegClass.contains(DestReg)) {
+      assert(!isHReg(DestReg) && "Cannot move between mask and h-reg");
       DestReg = getX86SubSuperRegister(DestReg, 32);
       return Subtarget.hasDQI() ? X86::KMOVBrk : X86::KMOVWrk;
     }
@@ -6348,6 +6349,7 @@ static unsigned CopyToFromAsymmetricReg(unsigned &DestReg, unsigned &SrcReg,
       return X86::KMOVWkr;
     }
     if (X86::GR8RegClass.contains(SrcReg)) {
+      assert(!isHReg(SrcReg) && "Cannot move between mask and h-reg");
       SrcReg = getX86SubSuperRegister(SrcReg, 32);
       return Subtarget.hasDQI() ? X86::KMOVBkr : X86::KMOVWkr;
     }
@@ -10412,16 +10414,20 @@ bool X86InstrInfo::isFunctionSafeToOutlineFrom(MachineFunction &MF) const {
 X86GenInstrInfo::MachineOutlinerInstrType
 X86InstrInfo::getOutliningType(MachineInstr &MI) const {
 
+  // Don't allow debug values to impact outlining type.
+  if (MI.isDebugValue() || MI.isIndirectDebugValue())
+    return MachineOutlinerInstrType::Invisible;
+
   // Is this a tail call? If yes, we can outline as a tail call.
   if (isTailCall(MI))
-    return MachineOutlinerInstrType::TailCall;
+    return MachineOutlinerInstrType::Legal;
 
   // Is this the terminator of a basic block?
-  if (MI.isTerminator()) {
+  if (MI.isTerminator() || MI.isReturn()) {
 
     // Does its parent have any successors in its MachineFunction?
     if (MI.getParent()->succ_empty())
-        return MachineOutlinerInstrType::TailCall;
+        return MachineOutlinerInstrType::Legal;
 
     // It does, so we can't tail call it.
     return MachineOutlinerInstrType::Illegal;
@@ -10438,7 +10444,7 @@ X86InstrInfo::getOutliningType(MachineInstr &MI) const {
   // catch it.
   if (MI.modifiesRegister(X86::RSP, &RI) || MI.readsRegister(X86::RSP, &RI) ||
       MI.getDesc().hasImplicitUseOfPhysReg(X86::RSP) ||
-      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP))
+      MI.getDesc().hasImplicitDefOfPhysReg(X86::RSP)) 
     return MachineOutlinerInstrType::Illegal;
 
   // Outlined calls change the instruction pointer, so don't read from it.
@@ -10456,10 +10462,6 @@ X86InstrInfo::getOutliningType(MachineInstr &MI) const {
     if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || MOP.isFI() ||
         MOP.isTargetIndex())
       return MachineOutlinerInstrType::Illegal;
-
-  // Don't allow debug values to impact outlining type.
-  if (MI.isDebugValue() || MI.isIndirectDebugValue())
-    return MachineOutlinerInstrType::Invisible;
 
   return MachineOutlinerInstrType::Legal;
 }
