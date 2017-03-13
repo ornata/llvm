@@ -1345,7 +1345,7 @@ define {i64, i1} @uaddoovf(i64 %a, i64 %b) {
 ; SDAG-NEXT:    movzbl %dil, %ecx
 ; SDAG-NEXT:    movzbl %sil, %eax
 ; SDAG-NEXT:    addq %rcx, %rax
-; SDAG-NEXT:    setb %dl
+; SDAG-NEXT:    xorl %edx, %edx
 ; SDAG-NEXT:    retq
 ;
 ; FAST-LABEL: uaddoovf:
@@ -1353,7 +1353,7 @@ define {i64, i1} @uaddoovf(i64 %a, i64 %b) {
 ; FAST-NEXT:    movzbl %dil, %ecx
 ; FAST-NEXT:    movzbl %sil, %eax
 ; FAST-NEXT:    addq %rcx, %rax
-; FAST-NEXT:    setb %dl
+; FAST-NEXT:    xorl %edx, %edx
 ; FAST-NEXT:    retq
 ;
 ; KNL-LABEL: uaddoovf:
@@ -1361,11 +1361,47 @@ define {i64, i1} @uaddoovf(i64 %a, i64 %b) {
 ; KNL-NEXT:    movzbl %dil, %ecx
 ; KNL-NEXT:    movzbl %sil, %eax
 ; KNL-NEXT:    addq %rcx, %rax
-; KNL-NEXT:    setb %dl
+; KNL-NEXT:    xorl %edx, %edx
 ; KNL-NEXT:    retq
   %1 = and i64 %a, 255
   %2 = and i64 %b, 255
   %t = call {i64, i1} @llvm.uadd.with.overflow.i64(i64 %1, i64 %2)
+  ret {i64, i1} %t
+}
+
+define {i64, i1} @usuboovf(i64 %a, i64 %b) {
+; SDAG-LABEL: usuboovf:
+; SDAG:       ## BB#0:
+; SDAG-NEXT:    notq %rsi
+; SDAG-NEXT:    xorl %edx, %edx
+; SDAG-NEXT:    movq %rsi, %rax
+; SDAG-NEXT:    retq
+;
+; FAST-LABEL: usuboovf:
+; FAST:       ## BB#0:
+; FAST-NEXT:    notq %rsi
+; FAST-NEXT:    xorl %edx, %edx
+; FAST-NEXT:    movq %rsi, %rax
+; FAST-NEXT:    retq
+;
+; KNL-LABEL: usuboovf:
+; KNL:       ## BB#0:
+; KNL-NEXT:    notq %rsi
+; KNL-NEXT:    xorl %edx, %edx
+; KNL-NEXT:    movq %rsi, %rax
+; KNL-NEXT:    retq
+  %t0 = call {i64, i1} @llvm.usub.with.overflow.i64(i64 %a, i64 %a)
+  %v0 = extractvalue {i64, i1} %t0, 0
+  %o0 = extractvalue {i64, i1} %t0, 1
+  %t1 = call {i64, i1} @llvm.usub.with.overflow.i64(i64 -1, i64 %b)
+  %v1 = extractvalue {i64, i1} %t1, 0
+  %o1 = extractvalue {i64, i1} %t1, 1
+  %oo = or i1 %o0, %o1
+  %t2 = call {i64, i1} @llvm.usub.with.overflow.i64(i64 %v1, i64 %v0)
+  %v2 = extractvalue {i64, i1} %t2, 0
+  %o2 = extractvalue {i64, i1} %t2, 1
+  %ooo = or i1 %oo, %o2
+  %t = insertvalue {i64, i1} %t2, i1 %ooo, 1
   ret {i64, i1} %t
 }
 

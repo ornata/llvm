@@ -545,32 +545,11 @@ public:
 
   bool isTailCall(const MachineInstr &Inst) const override;
 
-  /// \brief Represents the type of fixup that should be done to an instruction
-  /// if one is available.
-  /// \p NotFixable instructions have no fixup.
-  /// \p FixOp0 instructions have the stack pointer as operand 0, and can be
-  /// fixed by adding 8 to their displacement.
-  /// \p FixOp5 instructions have the stack pointer as operand 5, and can be
-  /// fixed by adding 8 to their displacement.
-  enum MachineOutlinerFixupType {
-    NotFixable,
-    FixOp0,
-    FixOp5
-  };
-
   unsigned getOutliningBenefit(size_t SequenceSize,
                                size_t Occurrences,
                                bool CanBeTailCall) const override;
 
   bool isFunctionSafeToOutlineFrom(MachineFunction &MF) const override;
-
-  /// \brief Return the type of fixup that an instruction would take to be valid
-  /// post-outlining if possible. Return NotFixable if no fixup is available.
-  MachineOutlinerFixupType getPostOutliningFixup(MachineInstr &MI) const;
-
-  /// \brief Fix up outlined instructions that used the stack pointer in an
-  /// outlined function \p MF.
-  void fixupPostOutline(MachineFunction &MF) const;
 
   llvm::X86GenInstrInfo::MachineOutlinerInstrType
   getOutliningType(MachineInstr &MI) const override;
@@ -588,7 +567,6 @@ public:
                      MachineBasicBlock::iterator &It,
                      MachineFunction &MF,
                      bool IsTailCall) const override;
-
 protected:
   /// Commutes the operands in the given instruction by changing the operands
   /// order and/or changing the instruction's opcode and/or the immediate value
