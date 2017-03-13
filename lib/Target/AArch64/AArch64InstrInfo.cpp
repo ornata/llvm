@@ -4269,6 +4269,8 @@ int AArch64InstrInfo::getPostOutliningFixup(MachineInstr &MI) const {
   case AArch64::STURSi:
   case AArch64::STURWi:
   case AArch64::STURXi:
+  case AArch64::STRWpost:
+  case AArch64::LDRWpost:
     return StackOffsetOperand.getImm() + 16;
 
   // Scale = 2
@@ -4340,23 +4342,6 @@ AArch64InstrInfo::getOutliningType(MachineInstr &MI) const {
   if (MI.isDebugValue() || MI.isIndirectDebugValue())
     return MachineOutlinerInstrType::Invisible;
 
-  // Don't outline positions.
-  if (MI.isPosition())
-    return MachineOutlinerInstrType::Illegal;
-
-  // Make sure none of the operands are un-outlinable.
-  for (const MachineOperand &MOP : MI.operands())
-    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || MOP.isFI() ||
-        MOP.isTargetIndex())
-      return MachineOutlinerInstrType::Illegal;
-
-  // Don't outline anything that uses the link register.  
-  if (MI.modifiesRegister(AArch64::LR, &RI) ||
-      MI.readsRegister(AArch64::LR, &RI) ||
-      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::LR) ||
-      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::LR))
-      return MachineOutlinerInstrType::Illegal;
-
   // Is this a terminator for a basic block?
   if (MI.isTerminator()) {
 
@@ -4367,6 +4352,23 @@ AArch64InstrInfo::getOutliningType(MachineInstr &MI) const {
     // It does have successors, so we can't outline it.
     return MachineOutlinerInstrType::Illegal;
   }
+
+  // Don't outline positions.
+  if (MI.isPosition())
+    return MachineOutlinerInstrType::Illegal;
+
+  // Make sure none of the operands are un-outlinable.
+  for (const MachineOperand &MOP : MI.operands())
+    if (MOP.isCPI() || MOP.isJTI() || MOP.isCFIIndex() || MOP.isFI() ||
+        MOP.isTargetIndex())
+      return MachineOutlinerInstrType::Illegal;
+
+  // Don't outline anything that uses the link register.
+  if (MI.modifiesRegister(AArch64::LR, &RI) ||
+      MI.readsRegister(AArch64::LR, &RI) ||
+      MI.getDesc().hasImplicitUseOfPhysReg(AArch64::LR) ||
+      MI.getDesc().hasImplicitDefOfPhysReg(AArch64::LR))
+      return MachineOutlinerInstrType::Illegal;
 
   // Does this use the stack?
   if (MI.modifiesRegister(AArch64::SP, &RI) ||
