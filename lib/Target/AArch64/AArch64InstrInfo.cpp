@@ -4361,12 +4361,12 @@ AArch64InstrInfo::getOutliningType(MachineInstr &MI) const {
       MI.getDesc().hasImplicitDefOfPhysReg(AArch64::LR))
       return MachineOutlinerInstrType::Illegal;
 
-  // Don't outline returns or basic block terminators.
-  if (MI.isTerminator() || MI.isReturn()) {
+  // Is this a terminator for a basic block?
+  if (MI.isTerminator()) {
 
     // Does its parent have any successors in its MachineFunction?
     if (MI.getParent()->succ_empty())
-        return MachineOutlinerInstrType::TailCall;
+        return MachineOutlinerInstrType::Legal;
 
     // It does have successors, so we can't outline it.
     return MachineOutlinerInstrType::Illegal;
@@ -4382,30 +4382,26 @@ AArch64InstrInfo::getOutliningType(MachineInstr &MI) const {
       return MachineOutlinerInstrType::Illegal;
   }
 
-  // Is this a tail call? If yes, we can outline as a tail call.
-  if (isTailCall(MI))
-    return MachineOutlinerInstrType::TailCall;
-
   return MachineOutlinerInstrType::Legal;
 }
 
-void AArch64InstrInfo::fixupPostOutline(MachineFunction &MF) const {
+void AArch64InstrInfo::fixupPostOutline(MachineBasicBlock &MBB) const {
+  for (MachineInstr &MI : MBB) {
+    if ((MI.modifiesRegister(AArch64::SP, &RI) ||
+         MI.readsRegister(AArch64::SP, &RI) ||
+         MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
+         MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP))) {
 
-  for (MachineBasicBlock &MBB : MF) {
-    for (MachineInstr &MI : MBB) {
-      if ((MI.modifiesRegister(AArch64::SP, &RI) ||
-           MI.readsRegister(AArch64::SP, &RI) ||
-           MI.getDesc().hasImplicitUseOfPhysReg(AArch64::SP) ||
-           MI.getDesc().hasImplicitDefOfPhysReg(AArch64::SP))) {
+      auto &StackOffsetOperand =
+      MI.getOperand(MI.getNumExplicitOperands() - 1);
 
-        auto &StackOffsetOperand = MI.getOperand(MI.getNumExplicitOperands() - 1);
-        assert(StackOffsetOperand.isImm() && "Stack offset wasn't immediate!");
-        int64_t NewOffset = getPostOutliningFixup(MI);
+      assert(StackOffsetOperand.isImm() && "Stack offset wasn't immediate!");
+      int64_t NewOffset = getPostOutliningFixup(MI);
 
-        assert(NewOffset != -1 && "Unfixable instruction shouldn't make it here!");
+      assert(NewOffset != -1 &&
+             "Unfixable instruction shouldn't make it here!");
 
-        StackOffsetOperand.setImm(NewOffset);
-      }
+      StackOffsetOperand.setImm(NewOffset);
     }
   }
 }
@@ -4423,7 +4419,7 @@ void AArch64InstrInfo::insertOutlinerEpilogue(MachineBasicBlock &MBB,
                           .addReg(AArch64::LR, RegState::Undef);
   MBB.insert(MBB.end(), ret);
 
-  fixupPostOutline(MF);
+  fixupPostOutline(MBB);
 }
 
 void AArch64InstrInfo::insertOutlinerPrologue(MachineBasicBlock &MBB,

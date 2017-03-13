@@ -246,24 +246,16 @@ public:
   getSerializableBitmaskMachineOperandTargetFlags() const override;
 
   bool isFunctionSafeToOutlineFrom(MachineFunction &MF) const override;
-
-  unsigned getOutliningBenefit(size_t SequenceSize, size_t Occurrences, bool CanBeTailCall) const override;
-
-  int getPostOutliningFixup(MachineInstr &MI) const;
-
+  unsigned getOutliningBenefit(size_t SequenceSize, size_t Occurrences,
+                               bool CanBeTailCall) const override;
   llvm::AArch64GenInstrInfo::MachineOutlinerInstrType
   getOutliningType(MachineInstr &MI) const override;
-
-  void fixupPostOutline(MachineFunction &MF) const;
-
   void insertOutlinerEpilogue(MachineBasicBlock &MBB,
                               MachineFunction &MF,
                               bool IsTailCall) const override;
-
   void insertOutlinerPrologue(MachineBasicBlock &MBB,
                               MachineFunction &MF,
                               bool isTailCall) const override;
-
   MachineBasicBlock::iterator
   insertOutlinedCall(Module &M, MachineBasicBlock &MBB,
                      MachineBasicBlock::iterator &It,
@@ -272,6 +264,19 @@ public:
 
 
 private:
+  /// \brief Returns an offset that will make a \p MachineInstr \p MI which uses
+  /// SP as an operand valid post-outlining if such an offset exists.
+  ///
+  /// \param MI The machine instruction to fix.
+  /// \returns The new offset to be applied to SP if one exists, -1 otherwise.
+  int getPostOutliningFixup(MachineInstr &MI) const;
+
+  /// \brief Sets the offsets on outlined instructions in \p MBB which use SP
+  /// so that they will be valid post-outlining.
+  ///
+  /// \param MBB A \p MachineBasicBlock in an outlined function.
+  void fixupPostOutline(MachineBasicBlock &MBB) const;
+
   void instantiateCondBranch(MachineBasicBlock &MBB, const DebugLoc &DL,
                              MachineBasicBlock *TBB,
                              ArrayRef<MachineOperand> Cond) const;
